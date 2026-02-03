@@ -47,6 +47,8 @@ async function sendEmailNotification(memberId, subject, templateName, data = {})
                `Password: ${data.password}\n` +
                `Referral Code: ${data.referralCode}\n` +
                `Join Date: ${new Date(data.joinDate).toLocaleDateString()}\n\n` +
+               `💵 **Welcome Bonus:**\n` +
+               `$1.00 has been added to your account balance.\n\n` +
                `💰 **Payment Methods:**\n` +
                `• M-Pesa Till: 6034186\n` +
                `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
@@ -1005,7 +1007,7 @@ async function createInvestment(investmentData) {
         investmentData.paymentMethod,
         investmentData.transactionHash || null,
         investmentData.paypalEmail || null,
-        'pending',
+        investmentData.status || 'pending',
         new Date(),
         investmentData.proofMediaId || null,
         investmentData.proofCaption || ''
@@ -1351,6 +1353,20 @@ async function getMediaFilesByChat(chatId) {
     return result.rows;
   } catch (error) {
     console.error('Error getting media files by chat:', error.message);
+    return [];
+  }
+}
+
+// Get media files by investment ID
+async function getMediaFilesByInvestmentId(investmentId) {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM media_files WHERE investment_id = $1 ORDER BY timestamp DESC',
+      [investmentId]
+    );
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting media files by investment:', error.message);
     return [];
   }
 }
@@ -3673,7 +3689,7 @@ bot.on('message', async (msg) => {
         passwordHash: hashPassword(session.data.password),
         referralCode: referralCode,
         referredBy: referredBy,
-        balance: 0,
+        balance: 1,
         totalInvested: 0,
         totalEarned: 0,
         referralEarnings: 0,
@@ -3731,7 +3747,9 @@ bot.on('message', async (msg) => {
         welcomeMessage += `Referred By: ${referredBy}\n`;
       }
       
-      welcomeMessage += `\n**IMPORTANT SECURITY:**\n` +
+      welcomeMessage += `\n**Welcome Bonus:**\n` +
+                       `$1.00 has been added to your account balance.\n\n` +
+                       `**IMPORTANT SECURITY:**\n` +
                        `This Telegram account is now PERMANENTLY linked to Member ID: ${memberId}\n` +
                        `You cannot login to any other account with this Telegram account.\n\n` +
                        `**Save your Member ID and Password!**\n` +
@@ -3780,6 +3798,15 @@ bot.on('message', async (msg) => {
         console.log('Welcome email failed:', emailError.message);
       }
       
+      // Record welcome bonus
+      await createTransaction({
+        id: `TRX-WELCOME-${Date.now()}`,
+        memberId: memberId,
+        type: 'bonus',
+        amount: 1,
+        description: 'Welcome bonus'
+      });
+
       // Record transaction
       await createTransaction({
         id: `TRX-REG-${Date.now()}`,
@@ -6188,7 +6215,7 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
 });
 
 // View payment proof
-bot.onText(/\/viewproof (.+)/, async (msg, match) => {
+bot.onText(/\/vi+ewproof (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const investmentId = match[1];
   
@@ -6216,8 +6243,8 @@ bot.onText(/\/viewproof (.+)/, async (msg, match) => {
     }
     
     // Get proof media
-    const mediaFiles = await getMediaFilesByChat(investmentId);
-    const proof = mediaFiles.find(m => m.investment_id === investmentId);
+    const mediaFiles = await getMediaFilesByInvestmentId(investmentId);
+    const proof = mediaFiles[0];
     
     if (!proof) {
       await bot.sendMessage(chatId, `❌ No proof found for investment ${investmentId}.`);
@@ -6429,8 +6456,9 @@ bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
     for (let investment of userInvestments.reverse()) {
       if (remaining <= 0) break;
       
-      const deductAmount = Math.min(investment.amount, remaining);
-      const newAmount = investment.amount - deductAmount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const deductAmount = Math.min(investmentAmount, remaining);
+      const newAmount = investmentAmount - deductAmount;
       remaining -= deductAmount;
       
       // Update investment
@@ -6813,7 +6841,7 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     // Refund amount to user balance
     const user = await getUserByMemberId(withdrawal.member_id);
     if (user) {
-      const newBalance = parseFloat(user.balance || 0) + withdrawal.amount;
+      const newBalance = parseFloat(user.balance || 0) + parseFloat(withdrawal.amount || 0);
       await updateUser(withdrawal.member_id, { balance: newBalance });
     }
     
