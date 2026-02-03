@@ -2848,6 +2848,7 @@ bot.onText(/\/profile/, async (msg) => {
   message += `Name: ${user.name}\n`;
   message += `Member ID: ${user.member_id}\n`;
   message += `Email: ${user.email || 'Not set'}\n`;
+  message += `Phone: ${user.phone || 'Not set'}\n`;
   message += `Joined: ${new Date(user.joined_date).toLocaleDateString()}\n`;
   message += `Last Login: ${user.last_login ? new Date(user.last_login).toLocaleDateString() : 'Never'}\n\n`;
   message += `💰 **Financial Summary**\n`;
@@ -4766,7 +4767,7 @@ bot.onText(/\/admin/, async (msg) => {
                       `/checkbinding USER_ID - Check Telegram binding\n\n` +
                       `/binduser USER_ID CHAT_ID - Bind Telegram account\n` +
                       `/unbinduser USER_ID - Unbind Telegram account\n` +
-                      `/edituser USER_ID FIELD VALUE - Edit user details (name/email)\n\n` +
+                      `/edituser USER_ID FIELD VALUE - Edit user details (name/email/phone)\n\n` +
                       `💰 **Financial Management:**\n` +
                       `/addbalance USER_ID AMOUNT - Add balance\n` +
                       `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
@@ -4887,8 +4888,8 @@ bot.onText(/\/edituser (.+?) (.+?) (.+)/, async (msg, match) => {
     return;
   }
 
-  if (!['name', 'email'].includes(field)) {
-    await bot.sendMessage(chatId, '❌ Invalid field. Use: /edituser USER_ID name|email VALUE');
+  if (!['name', 'email', 'phone'].includes(field)) {
+    await bot.sendMessage(chatId, '❌ Invalid field. Use: /edituser USER_ID name|email|phone VALUE');
     return;
   }
 
@@ -4900,7 +4901,22 @@ bot.onText(/\/edituser (.+?) (.+?) (.+)/, async (msg, match) => {
       return;
     }
 
-    const updates = field === 'name' ? { name: value } : { email: value };
+    if (field === 'phone') {
+      const phoneRegex = /^\+\d{7,15}$/;
+      if (!phoneRegex.test(value)) {
+        await bot.sendMessage(chatId, '❌ Invalid phone number. Use country code (e.g., +254712345678).');
+        return;
+      }
+    }
+
+    let updates = {};
+    if (field === 'name') {
+      updates = { name: value };
+    } else if (field === 'email') {
+      updates = { email: value };
+    } else if (field === 'phone') {
+      updates = { phone: value };
+    }
     const updatedUser = await updateUser(memberId, updates);
 
     await bot.sendMessage(chatId,
@@ -5297,6 +5313,7 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `Name: ${user.name}\n` +
                    `Member ID: ${user.member_id}\n` +
                    `Email: ${user.email || 'N/A'}\n` +
+                   `Phone: ${user.phone || 'N/A'}\n` +
                    `Chat ID: ${user.chat_id || 'N/A'}\n` +
                    `Telegram Account ID: ${user.telegram_account_id || 'N/A'}\n` +
                    `Account Bound: ${user.account_bound ? '✅ Yes' : '❌ No'}\n` +
@@ -5319,6 +5336,7 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `**Actions:**\n` +
                    `💰 Add Balance: /addbalance ${memberId} AMOUNT\n` +
                    `🔐 Reset Pass: /resetpass ${memberId}\n` +
+                   `📞 Edit Phone: /edituser ${memberId} phone +254712345678\n` +
                    `📨 Message: /message ${memberId}\n` +
                    `🔒 Check Binding: /checkbinding ${memberId}\n` +
                    `${user.banned ? `✅ Unsuspend: /unsuspend ${memberId}` : `🚫 Suspend: /suspend ${memberId}`}`;
