@@ -24,6 +24,25 @@ async function sendEmail(to, subject, text) {
   });
 }
 
+function getPasswordStrengthError(password, label = 'password') {
+  if (password.length < 8) {
+    return `❌ Password must be at least 8 characters. Please enter ${label}:`;
+  }
+  if (!/[a-z]/.test(password)) {
+    return `❌ Password must include at least one lowercase letter. Please enter ${label}:`;
+  }
+  if (!/[A-Z]/.test(password)) {
+    return `❌ Password must include at least one uppercase letter. Please enter ${label}:`;
+  }
+  if (!/\d/.test(password)) {
+    return `❌ Password must include at least one number. Please enter ${label}:`;
+  }
+  if (!/[^a-zA-Z0-9]/.test(password)) {
+    return `❌ Password must include at least one symbol. Please enter ${label}:`;
+  }
+  return '';
+}
+
 // ==================== EMAIL NOTIFICATION HELPER ====================
 
 // Helper function to send email notifications
@@ -47,11 +66,13 @@ async function sendEmailNotification(memberId, subject, templateName, data = {})
                `Password: ${data.password}\n` +
                `Referral Code: ${data.referralCode}\n` +
                `Join Date: ${new Date(data.joinDate).toLocaleDateString()}\n\n` +
+               `💵 **Welcome Bonus:**\n` +
+               `$1.00 has been added to your account balance.\n\n` +
                `💰 **Payment Methods:**\n` +
                `• M-Pesa Till: 6034186\n` +
                `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-               `• PayPal: dave@starlifeadvert.com\n` +
+               `• PayPal: starlife.payment@starlifeadvert.com\n` +
                `Name: Starlife Advert US Agency\n\n` +
                `📈 **Start Earning:**\n` +
                `1. Use /invest to make your first investment\n` +
@@ -584,6 +605,7 @@ async function initDatabase() {
         telegram_account_id VARCHAR(100),
         name VARCHAR(100) NOT NULL,
         email VARCHAR(100),
+        phone VARCHAR(30),
         password_hash VARCHAR(255) NOT NULL,
         balance DECIMAL(15,2) DEFAULT 0.00,
         total_invested DECIMAL(15,2) DEFAULT 0.00,
@@ -611,6 +633,11 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id);
       CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    `);
+
+    await client.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
     `);
     
     // Create investments table
@@ -898,11 +925,11 @@ async function createUser(userData) {
   try {
     const result = await pool.query(
       `INSERT INTO users (
-        member_id, chat_id, telegram_account_id, name, email, password_hash,
+        member_id, chat_id, telegram_account_id, name, email, phone, password_hash,
         referral_code, referred_by, balance, total_invested, total_earned,
         referral_earnings, referrals, active_investments, joined_date,
         last_login, banned, bot_blocked, account_bound, offline_messages
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
       RETURNING *`,
       [
         userData.memberId,
@@ -910,6 +937,7 @@ async function createUser(userData) {
         userData.telegramAccountId,
         userData.name,
         userData.email,
+        userData.phone,
         userData.passwordHash,
         userData.referralCode,
         userData.referredBy || null,
@@ -1005,7 +1033,7 @@ async function createInvestment(investmentData) {
         investmentData.paymentMethod,
         investmentData.transactionHash || null,
         investmentData.paypalEmail || null,
-        'pending',
+        investmentData.status || 'pending',
         new Date(),
         investmentData.proofMediaId || null,
         investmentData.proofCaption || ''
@@ -1351,6 +1379,20 @@ async function getMediaFilesByChat(chatId) {
     return result.rows;
   } catch (error) {
     console.error('Error getting media files by chat:', error.message);
+    return [];
+  }
+}
+
+// Get media files by investment ID
+async function getMediaFilesByInvestmentId(investmentId) {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM media_files WHERE investment_id = $1 ORDER BY timestamp DESC',
+      [investmentId]
+    );
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting media files by investment:', error.message);
     return [];
   }
 }
@@ -2340,7 +2382,7 @@ bot.onText(/\/start/, async (msg) => {
                             `• M-Pesa Till: 6034186\n` +
                             `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                             `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-                            `• PayPal: dave@starlifeadvert.com\n` +
+                            `• PayPal: starlife.payment@starlifeadvert.com\n` +
                             `Name: Starlife Advert US Agency`;
       
       await bot.sendMessage(chatId, welcomeMessage);
@@ -2369,7 +2411,7 @@ bot.onText(/\/start/, async (msg) => {
   fakeMessage += '• M-Pesa Till: 6034186\n';
   fakeMessage += '• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n';
   fakeMessage += '• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n';
-  fakeMessage += '• PayPal: dave@starlifeadvert.com\n';
+  fakeMessage += '• PayPal: starlife.payment@starlifeadvert.com\n';
   fakeMessage += 'Name: Starlife Advert US Agency';
   
   await bot.sendMessage(chatId, fakeMessage);
@@ -2462,7 +2504,7 @@ bot.onText(/\/help/, async (msg) => {
   helpMessage += `• M-Pesa Till: 6034186\n`;
   helpMessage += `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n`;
   helpMessage += `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n`;
-  helpMessage += `• PayPal: dave@starlifeadvert.com\n`;
+  helpMessage += `• PayPal: starlife.payment@starlifeadvert.com\n`;
   helpMessage += `Name: Starlife Advert US Agency\n\n`;
   helpMessage += `**❓ Need Help?**\n`;
   helpMessage += `Use /support for immediate assistance`;
@@ -2562,7 +2604,7 @@ bot.onText(/\/investnow/, async (msg) => {
                       `Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
                       `📌 Send only USDT (TRC20)\n\n` +
                       `💳 **PayPal:**\n` +
-                      `Email: dave@starlifeadvert.com\n\n` +
+                      `Email: starlife.payment@starlifeadvert.com\n\n` +
                       `**Step 3: Invest**\n` +
                       `Use /invest to start investment\n` +
                       `Minimum: $10 | Maximum: $800,000\n` +
@@ -2643,7 +2685,7 @@ bot.onText(/\/invest/, async (msg) => {
     `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
     `   📌 Send only USDT (TRC20)\n\n` +
     `4️⃣ **PayPal**\n` +
-    `   Email: dave@starlifeadvert.com\n\n` +
+    `   Email: starlife.payment@starlifeadvert.com\n\n` +
     `**Investment Details:**\n` +
     `Minimum Investment: $10\n` +
     `Maximum Investment: $800,000\n` +
@@ -3500,21 +3542,17 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId,
         `✅ Current password verified.\n\n` +
         `Enter your new password:\n` +
-        `• At least 6 characters\n` +
-        `• Must include letters and numbers\n\n` +
+        `• At least 8 characters\n` +
+        `• Must include uppercase, lowercase, number, and symbol\n\n` +
         `Enter new password:`
       );
     }
     else if (session.step === 'change_password_new') {
       const newPassword = text.trim();
       
-      if (newPassword.length < 6) {
-        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter new password:');
-        return;
-      }
-      
-      if (!/[a-zA-Z]/.test(newPassword) || !/\d/.test(newPassword)) {
-        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter new password:');
+      const passwordError = getPasswordStrengthError(newPassword, 'new password');
+      if (passwordError) {
+        await bot.sendMessage(chatId, passwordError);
         return;
       }
       
@@ -3585,7 +3623,7 @@ bot.on('message', async (msg) => {
       
       await bot.sendMessage(chatId,
         `✅ Name: ${name}\n\n` +
-        `Step 2/4: Enter your email\n\n` +
+        `Step 2/5: Enter your email\n\n` +
         `Example: johndoe@example.com\n` +
         `Enter your email:`
       );
@@ -3598,28 +3636,48 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, '❌ Invalid email format. Please enter a valid email:');
         return;
       }
+
+      const existingEmailUser = await getUserByEmail(email);
+      if (existingEmailUser) {
+        await bot.sendMessage(chatId, '❌ This email is already registered. Please enter a different email:');
+        return;
+      }
       
       session.data.email = email;
-      session.step = 'awaiting_password';
+      session.step = 'awaiting_phone';
       
       await bot.sendMessage(chatId,
         `✅ Email: ${email}\n\n` +
-        `Step 3/4: Create a password\n\n` +
-        `• At least 6 characters\n` +
-        `• Must include letters and numbers\n` +
+        `Step 3/5: Enter your phone number\n\n` +
+        `Include country code (e.g., +254712345678)\n` +
+        `Enter your phone number:`
+      );
+    }
+    else if (session.step === 'awaiting_phone') {
+      const phone = text.trim();
+      const phoneRegex = /^\+\d{7,15}$/;
+
+      if (!phoneRegex.test(phone)) {
+        await bot.sendMessage(chatId, '❌ Invalid phone number. Use country code (e.g., +254712345678):');
+        return;
+      }
+
+      session.data.phone = phone;
+      session.step = 'awaiting_password';
+
+      await bot.sendMessage(chatId,
+        `✅ Phone: ${phone}\n\n` +
+        `Step 4/5: Create a password\n\n` +
+        `• At least 8 characters\n` +
+        `• Must include uppercase, lowercase, number, and symbol\n` +
         `Enter your password:`
       );
     }
     else if (session.step === 'awaiting_password') {
       const password = text.trim();
-      
-      if (password.length < 6) {
-        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter password:');
-        return;
-      }
-      
-      if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter password:');
+      const passwordError = getPasswordStrengthError(password);
+      if (passwordError) {
+        await bot.sendMessage(chatId, passwordError);
         return;
       }
       
@@ -3627,7 +3685,7 @@ bot.on('message', async (msg) => {
       session.step = 'awaiting_confirm_password';
       
       await bot.sendMessage(chatId,
-        `Step 4/4: Confirm your password\n\n` +
+        `Step 5/5: Confirm your password\n\n` +
         `Re-enter your password:`
       );
     }
@@ -3670,10 +3728,11 @@ bot.on('message', async (msg) => {
         telegramAccountId: chatId.toString(),
         name: session.data.name,
         email: session.data.email,
+        phone: session.data.phone,
         passwordHash: hashPassword(session.data.password),
         referralCode: referralCode,
         referredBy: referredBy,
-        balance: 0,
+        balance: 1,
         totalInvested: 0,
         totalEarned: 0,
         referralEarnings: 0,
@@ -3731,7 +3790,9 @@ bot.on('message', async (msg) => {
         welcomeMessage += `Referred By: ${referredBy}\n`;
       }
       
-      welcomeMessage += `\n**IMPORTANT SECURITY:**\n` +
+      welcomeMessage += `\n**Welcome Bonus:**\n` +
+                       `$1.00 has been added to your account balance.\n\n` +
+                       `**IMPORTANT SECURITY:**\n` +
                        `This Telegram account is now PERMANENTLY linked to Member ID: ${memberId}\n` +
                        `You cannot login to any other account with this Telegram account.\n\n` +
                        `**Save your Member ID and Password!**\n` +
@@ -3748,7 +3809,7 @@ bot.on('message', async (msg) => {
                        `• M-Pesa Till: 6034186\n` +
                        `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                        `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-                       `• PayPal: dave@starlifeadvert.com\n` +
+                       `• PayPal: starlife.payment@starlifeadvert.com\n` +
                        `Name: Starlife Advert US Agency\n\n` +
                        `**Quick Commands:**\n` +
                        `/invest - Make investment\n` +
@@ -3780,6 +3841,15 @@ bot.on('message', async (msg) => {
         console.log('Welcome email failed:', emailError.message);
       }
       
+      // Record welcome bonus
+      await createTransaction({
+        id: `TRX-WELCOME-${Date.now()}`,
+        memberId: memberId,
+        type: 'bonus',
+        amount: 1,
+        description: 'Welcome bonus'
+      });
+
       // Record transaction
       await createTransaction({
         id: `TRX-REG-${Date.now()}`,
@@ -3948,7 +4018,7 @@ bot.on('message', async (msg) => {
         `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
         `   📌 Send only USDT (TRC20)\n\n` +
         `4️⃣ **PayPal**\n` +
-        `   Email: dave@starlifeadvert.com\n\n` +
+        `   Email: starlife.payment@starlifeadvert.com\n\n` +
         `Reply with number (1-4):`
       );
     }
@@ -3990,7 +4060,7 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId,
           `✅ Payment Method: PayPal\n\n` +
           `**PayPal Email:**\n` +
-          `dave@starlifeadvert.com\n\n` +
+          `starlife.payment@starlifeadvert.com\n\n` +
           `**Important:**\n` +
           `• Send payment to the email above\n` +
           `• Include your Member ID in the payment note\n\n` +
@@ -4694,6 +4764,9 @@ bot.onText(/\/admin/, async (msg) => {
                       `/findref REF_CODE - Find user by referral code\n` +
                       `/message USER_ID - Message user directly\n` +
                       `/checkbinding USER_ID - Check Telegram binding\n\n` +
+                      `/binduser USER_ID CHAT_ID - Bind Telegram account\n` +
+                      `/unbinduser USER_ID - Unbind Telegram account\n` +
+                      `/edituser USER_ID FIELD VALUE - Edit user details (name/email)\n\n` +
                       `💰 **Financial Management:**\n` +
                       `/addbalance USER_ID AMOUNT - Add balance\n` +
                       `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
@@ -4721,6 +4794,132 @@ bot.onText(/\/admin/, async (msg) => {
                       `/broadcast MESSAGE - Send to all users`;
   
   await bot.sendMessage(chatId, adminMessage);
+});
+
+// Bind Telegram account to user (admin override)
+bot.onText(/\/binduser (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const targetChatId = match[2].trim();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    await updateUser(memberId, {
+      chat_id: targetChatId,
+      telegram_account_id: targetChatId,
+      account_bound: true
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ **Telegram Account Bound**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `New Chat ID: ${targetChatId}\n` +
+      `Binding Status: ✅ BOUND`
+    );
+
+    // Notify user if possible
+    await sendUserNotification(memberId,
+      `🔒 **Account Binding Updated**\n\n` +
+      `Your account has been bound to this Telegram account by an administrator.\n\n` +
+      `If this wasn't requested, contact support with /support.`
+    );
+  } catch (error) {
+    console.log('Error in /binduser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error binding Telegram account.');
+  }
+});
+
+// Unbind Telegram account from user (admin override)
+bot.onText(/\/unbinduser (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    await updateUser(memberId, {
+      chat_id: null,
+      telegram_account_id: null,
+      account_bound: false
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ **Telegram Account Unbound**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `Binding Status: ❌ NOT BOUND`
+    );
+  } catch (error) {
+    console.log('Error in /unbinduser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error unbinding Telegram account.');
+  }
+});
+
+// Edit user details (admin override)
+bot.onText(/\/edituser (.+?) (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const field = match[2].toLowerCase();
+  const value = match[3].trim();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  if (!['name', 'email'].includes(field)) {
+    await bot.sendMessage(chatId, '❌ Invalid field. Use: /edituser USER_ID name|email VALUE');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    const updates = field === 'name' ? { name: value } : { email: value };
+    const updatedUser = await updateUser(memberId, updates);
+
+    await bot.sendMessage(chatId,
+      `✅ **User Updated**\n\n` +
+      `User: ${updatedUser.name} (${memberId})\n` +
+      `Updated ${field}: ${value}`
+    );
+
+    // Notify user
+    await sendUserNotification(memberId,
+      `✅ **Account Details Updated**\n\n` +
+      `Your ${field} has been updated by an administrator.\n` +
+      `New ${field}: ${value}\n\n` +
+      `If this wasn't requested, contact support with /support.`
+    );
+  } catch (error) {
+    console.log('Error in /edituser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error updating user details.');
+  }
 });
 
 // Check Telegram binding for user
@@ -5808,8 +6007,7 @@ bot.onText(/\/forceprofit (.+)/, async (msg, match) => {
       
       await updateInvestment(investment.investment_id, {
         total_profit: newTotalProfit,
-        days_active: newDaysActive,
-        updated_at: new Date()
+        days_active: newDaysActive
       });
       
       // Record transaction
@@ -5951,7 +6149,8 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
     // Update user's total invested and active investments count
     const user = await getUserByMemberId(investment.member_id);
     if (user) {
-      const newTotalInvested = parseFloat(user.total_invested || 0) + investment.amount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const newTotalInvested = parseFloat(user.total_invested || 0) + investmentAmount;
       const newActiveInvestments = (user.active_investments || 0) + 1;
       
       await updateUser(investment.member_id, {
@@ -5963,7 +6162,7 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       if (user.referred_by && isFirstInvestment) {
         const referrer = await getUserByReferralCode(user.referred_by);
         if (referrer) {
-          const referralBonus = calculateReferralBonus(investment.amount);
+          const referralBonus = calculateReferralBonus(investmentAmount);
           
           // Update referrer's balance and referral earnings
           const newReferrerBalance = parseFloat(referrer.balance || 0) + referralBonus;
@@ -5987,7 +6186,7 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
                 status: 'paid',
                 bonus_amount: referralBonus,
                 bonus_paid: true,
-                investment_amount: investment.amount,
+                investment_amount: investmentAmount,
                 paid_at: new Date(),
                 is_first_investment: false
               });
@@ -6188,7 +6387,7 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
 });
 
 // View payment proof
-bot.onText(/\/viewproof (.+)/, async (msg, match) => {
+bot.onText(/\/vi+ewproof (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const investmentId = match[1];
   
@@ -6216,8 +6415,8 @@ bot.onText(/\/viewproof (.+)/, async (msg, match) => {
     }
     
     // Get proof media
-    const mediaFiles = await getMediaFilesByChat(investmentId);
-    const proof = mediaFiles.find(m => m.investment_id === investmentId);
+    const mediaFiles = await getMediaFilesByInvestmentId(investmentId);
+    const proof = mediaFiles[0];
     
     if (!proof) {
       await bot.sendMessage(chatId, `❌ No proof found for investment ${investmentId}.`);
@@ -6429,8 +6628,9 @@ bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
     for (let investment of userInvestments.reverse()) {
       if (remaining <= 0) break;
       
-      const deductAmount = Math.min(investment.amount, remaining);
-      const newAmount = investment.amount - deductAmount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const deductAmount = Math.min(investmentAmount, remaining);
+      const newAmount = investmentAmount - deductAmount;
       remaining -= deductAmount;
       
       // Update investment
@@ -6813,7 +7013,7 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     // Refund amount to user balance
     const user = await getUserByMemberId(withdrawal.member_id);
     if (user) {
-      const newBalance = parseFloat(user.balance || 0) + withdrawal.amount;
+      const newBalance = parseFloat(user.balance || 0) + parseFloat(withdrawal.amount || 0);
       await updateUser(withdrawal.member_id, { balance: newBalance });
     }
     
