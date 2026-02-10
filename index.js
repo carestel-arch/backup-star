@@ -24,6 +24,25 @@ async function sendEmail(to, subject, text) {
   });
 }
 
+function getPasswordStrengthError(password, label = 'password') {
+  if (password.length < 8) {
+    return `❌ Password must be at least 8 characters. Please enter ${label}:`;
+  }
+  if (!/[a-z]/.test(password)) {
+    return `❌ Password must include at least one lowercase letter. Please enter ${label}:`;
+  }
+  if (!/[A-Z]/.test(password)) {
+    return `❌ Password must include at least one uppercase letter. Please enter ${label}:`;
+  }
+  if (!/\d/.test(password)) {
+    return `❌ Password must include at least one number. Please enter ${label}:`;
+  }
+  if (!/[^a-zA-Z0-9]/.test(password)) {
+    return `❌ Password must include at least one symbol. Please enter ${label}:`;
+  }
+  return '';
+}
+
 // ==================== EMAIL NOTIFICATION HELPER ====================
 
 // Helper function to send email notifications
@@ -47,11 +66,13 @@ async function sendEmailNotification(memberId, subject, templateName, data = {})
                `Password: ${data.password}\n` +
                `Referral Code: ${data.referralCode}\n` +
                `Join Date: ${new Date(data.joinDate).toLocaleDateString()}\n\n` +
+               `💵 **Welcome Bonus:**\n` +
+               `$1.00 has been added to your account balance.\n\n` +
                `💰 **Payment Methods:**\n` +
                `• M-Pesa Till: 6034186\n` +
                `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-               `• PayPal: dave@starlifeadvert.com\n` +
+               `• PayPal: starlife.payment@starlifeadvert.com\n` +
                `Name: Starlife Advert US Agency\n\n` +
                `📈 **Start Earning:**\n` +
                `1. Use /invest to make your first investment\n` +
@@ -584,6 +605,7 @@ async function initDatabase() {
         telegram_account_id VARCHAR(100),
         name VARCHAR(100) NOT NULL,
         email VARCHAR(100),
+        phone VARCHAR(30),
         password_hash VARCHAR(255) NOT NULL,
         balance DECIMAL(15,2) DEFAULT 0.00,
         total_invested DECIMAL(15,2) DEFAULT 0.00,
@@ -611,6 +633,11 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id);
       CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    `);
+
+    await client.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
     `);
     
     // Create investments table
@@ -794,6 +821,130 @@ async function initDatabase() {
       )
     `);
     
+
+    // ==================== SHAREHOLDERS MODULE TABLES ====================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_tiers (
+        id SERIAL PRIMARY KEY,
+        tier_name VARCHAR(50) UNIQUE NOT NULL,
+        min_usd DECIMAL(15,2) NOT NULL,
+        benefits_json JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholders (
+        id SERIAL PRIMARY KEY,
+        shareholder_id VARCHAR(100) UNIQUE NOT NULL,
+        member_id VARCHAR(50) UNIQUE NOT NULL,
+        activation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status VARCHAR(30) DEFAULT 'active',
+        tier VARCHAR(50) DEFAULT 'Bronze',
+        total_stake_usd DECIMAL(15,2) DEFAULT 0.00,
+        earnings_status VARCHAR(30) DEFAULT 'active',
+        earnings_balance_usd DECIMAL(15,2) DEFAULT 0.00,
+        lock_start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_stake_activation_date TIMESTAMP,
+        suspended BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_stake_requests (
+        id SERIAL PRIMARY KEY,
+        request_id VARCHAR(60) UNIQUE NOT NULL,
+        shareholder_id VARCHAR(100) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        method VARCHAR(50),
+        tx_ref VARCHAR(255),
+        proof_file_id VARCHAR(255),
+        proof_type VARCHAR(50),
+        proof_status VARCHAR(30) DEFAULT 'pending_proof',
+        status VARCHAR(30) DEFAULT 'pending_admin_approval',
+        admin_reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        decided_at TIMESTAMP,
+        decided_by VARCHAR(100),
+        FOREIGN KEY (shareholder_id) REFERENCES shareholders(shareholder_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_stake_history (
+        id SERIAL PRIMARY KEY,
+        history_id VARCHAR(60) UNIQUE NOT NULL,
+        shareholder_id VARCHAR(100) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        type VARCHAR(30) NOT NULL,
+        ref VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (shareholder_id) REFERENCES shareholders(shareholder_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_withdrawal_requests (
+        id SERIAL PRIMARY KEY,
+        request_id VARCHAR(60) UNIQUE NOT NULL,
+        shareholder_id VARCHAR(100) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        method VARCHAR(50),
+        payout_details TEXT,
+        status VARCHAR(30) DEFAULT 'pending_admin_approval',
+        admin_reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        decided_at TIMESTAMP,
+        decided_by VARCHAR(100),
+        FOREIGN KEY (shareholder_id) REFERENCES shareholders(shareholder_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_audit_log (
+        id SERIAL PRIMARY KEY,
+        log_id VARCHAR(60) UNIQUE NOT NULL,
+        admin_id VARCHAR(100),
+        action VARCHAR(100) NOT NULL,
+        target_id VARCHAR(100),
+        before_data JSONB,
+        after_data JSONB,
+        reason TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shareholders_member_id ON shareholders(member_id);
+      CREATE INDEX IF NOT EXISTS idx_shareholders_status ON shareholders(status);
+      CREATE INDEX IF NOT EXISTS idx_shareholder_stake_requests_shareholder_id ON shareholder_stake_requests(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_shareholder_stake_requests_status ON shareholder_stake_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_shareholder_withdrawal_requests_shareholder_id ON shareholder_withdrawal_requests(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_shareholder_withdrawal_requests_status ON shareholder_withdrawal_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_shareholder_audit_log_target_id ON shareholder_audit_log(target_id);
+    `);
+
+    // Seed default shareholder tiers if empty
+    const tierCount = await client.query('SELECT COUNT(*) FROM shareholder_tiers');
+    if (parseInt(tierCount.rows[0].count) === 0) {
+      await client.query(
+        `INSERT INTO shareholder_tiers (tier_name, min_usd, benefits_json) VALUES
+         ('Bronze', 0, $1),
+         ('Silver', 1000, $2),
+         ('Gold', 5000, $3),
+         ('Platinum', 10000, $4)`,
+        [
+          JSON.stringify(['Basic transport allowance']),
+          JSON.stringify(['Transport allowance', 'Daily expenses allowance']),
+          JSON.stringify(['Transport allowance', 'Daily expenses allowance', 'Travel allowance']),
+          JSON.stringify(['Transport allowance', 'Daily expenses allowance', 'Travel allowance', 'Housing allowance'])
+        ]
+      );
+    }
+
     // Create fake_members table
     await client.query(`
       CREATE TABLE IF NOT EXISTS fake_members (
@@ -898,11 +1049,11 @@ async function createUser(userData) {
   try {
     const result = await pool.query(
       `INSERT INTO users (
-        member_id, chat_id, telegram_account_id, name, email, password_hash,
+        member_id, chat_id, telegram_account_id, name, email, phone, password_hash,
         referral_code, referred_by, balance, total_invested, total_earned,
         referral_earnings, referrals, active_investments, joined_date,
         last_login, banned, bot_blocked, account_bound, offline_messages
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
       RETURNING *`,
       [
         userData.memberId,
@@ -910,6 +1061,7 @@ async function createUser(userData) {
         userData.telegramAccountId,
         userData.name,
         userData.email,
+        userData.phone,
         userData.passwordHash,
         userData.referralCode,
         userData.referredBy || null,
@@ -1005,7 +1157,7 @@ async function createInvestment(investmentData) {
         investmentData.paymentMethod,
         investmentData.transactionHash || null,
         investmentData.paypalEmail || null,
-        'pending',
+        investmentData.status || 'pending',
         new Date(),
         investmentData.proofMediaId || null,
         investmentData.proofCaption || ''
@@ -1353,6 +1505,144 @@ async function getMediaFilesByChat(chatId) {
     console.error('Error getting media files by chat:', error.message);
     return [];
   }
+}
+
+// Get media files by investment ID
+async function getMediaFilesByInvestmentId(investmentId) {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM media_files WHERE investment_id = $1 ORDER BY timestamp DESC',
+      [investmentId]
+    );
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting media files by investment:', error.message);
+    return [];
+  }
+}
+
+// ==================== SHAREHOLDER HELPER FUNCTIONS ====================
+
+function getNameInitials(name) {
+  return (name || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0].toUpperCase())
+    .join('') || 'NA';
+}
+
+async function generateShareholderId(name) {
+  const year = new Date().getFullYear();
+  const initials = getNameInitials(name);
+  const result = await pool.query('SELECT COUNT(*) FROM shareholders');
+  const seq = String(parseInt(result.rows[0].count || 0) + 1).padStart(2, '0');
+  return `SHA-${year}-${initials}${seq}-UI`;
+}
+
+async function getShareholderByMemberId(memberId) {
+  try {
+    const result = await pool.query('SELECT * FROM shareholders WHERE member_id = $1', [memberId]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error getting shareholder by member ID:', error.message);
+    return null;
+  }
+}
+
+async function getShareholderByShareholderId(shareholderId) {
+  try {
+    const result = await pool.query('SELECT * FROM shareholders WHERE shareholder_id = $1', [shareholderId]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error getting shareholder by ID:', error.message);
+    return null;
+  }
+}
+
+async function getShareholderTierByStake(stakeUSD) {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM shareholder_tiers WHERE min_usd <= $1 ORDER BY min_usd DESC LIMIT 1',
+      [stakeUSD]
+    );
+    return result.rows[0] || { tier_name: 'Bronze', min_usd: 0, benefits_json: [] };
+  } catch (error) {
+    console.error('Error getting shareholder tier:', error.message);
+    return { tier_name: 'Bronze', min_usd: 0, benefits_json: [] };
+  }
+}
+
+async function createShareholderProfile(memberId, adminId = null) {
+  const user = await getUserByMemberId(memberId);
+  if (!user) throw new Error('User not found');
+
+  const existing = await getShareholderByMemberId(memberId);
+  if (existing) return existing;
+
+  const shareholderId = await generateShareholderId(user.name);
+  const tier = await getShareholderTierByStake(0);
+
+  const result = await pool.query(
+    `INSERT INTO shareholders (
+      shareholder_id, member_id, activation_date, status, tier, total_stake_usd, earnings_status, lock_start_date
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [shareholderId, memberId, new Date(), 'active', tier.tier_name, 0, 'active', new Date()]
+  );
+
+  await logShareholderAudit(adminId, 'create_shareholder_profile', shareholderId, null, result.rows[0], 'Created shareholder profile');
+  return result.rows[0];
+}
+
+async function updateShareholder(shareholderId, updates) {
+  const fields = [];
+  const values = [];
+  let idx = 1;
+  for (const [k, v] of Object.entries(updates)) {
+    fields.push(`${k} = $${idx++}`);
+    values.push(v);
+  }
+  fields.push(`updated_at = $${idx++}`);
+  values.push(new Date());
+  values.push(shareholderId);
+  const result = await pool.query(`UPDATE shareholders SET ${fields.join(', ')} WHERE shareholder_id = $${idx} RETURNING *`, values);
+  return result.rows[0] || null;
+}
+
+async function createShareholderStakeHistory(data) {
+  return pool.query(
+    `INSERT INTO shareholder_stake_history (history_id, shareholder_id, amount_usd, type, ref, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [data.historyId, data.shareholderId, data.amountUSD, data.type, data.ref || null, new Date()]
+  );
+}
+
+async function logShareholderAudit(adminId, action, targetId, beforeData = null, afterData = null, reason = '') {
+  try {
+    await pool.query(
+      `INSERT INTO shareholder_audit_log (log_id, admin_id, action, target_id, before_data, after_data, reason, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        `SHA-AUD-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        adminId ? adminId.toString() : null,
+        action,
+        targetId,
+        beforeData ? JSON.stringify(beforeData) : null,
+        afterData ? JSON.stringify(afterData) : null,
+        reason || '',
+        new Date()
+      ]
+    );
+  } catch (error) {
+    console.error('Error logging shareholder audit:', error.message);
+  }
+}
+
+function getShareholderLockDaysRemaining(lockStartDate) {
+  const lockMs = 180 * 24 * 60 * 60 * 1000;
+  const elapsed = Date.now() - new Date(lockStartDate).getTime();
+  if (elapsed >= lockMs) return 0;
+  return Math.ceil((lockMs - elapsed) / (24 * 60 * 60 * 1000));
 }
 
 // Create earnings view
@@ -2194,6 +2484,74 @@ bot.on('photo', async (msg) => {
     }
   }
   
+  // Handle shareholder top-up proof photos
+  if (session && session.step === 'awaiting_sh_topup_proof') {
+    try {
+      const photo = msg.photo[msg.photo.length - 1];
+      const fileId = photo.file_id;
+      const caption = msg.caption || '';
+
+      const requestId = `SHT-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO shareholder_stake_requests
+        (request_id, shareholder_id, amount_usd, method, tx_ref, proof_file_id, proof_type, proof_status, status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          requestId,
+          session.data.shareholderId,
+          session.data.amountUSD,
+          session.data.method,
+          session.data.txRef || null,
+          fileId,
+          'photo',
+          'submitted',
+          'pending_admin_approval',
+          new Date()
+        ]
+      );
+
+      await logShareholderAudit(null, 'create_shareholder_topup_request', requestId, null, {
+        shareholder_id: session.data.shareholderId,
+        amount_usd: session.data.amountUSD,
+        method: session.data.method,
+        tx_ref: session.data.txRef || null,
+        proof: fileId
+      }, 'User submitted shareholder stake top-up');
+
+      await bot.sendMessage(chatId,
+        `✅ Shareholder top-up request submitted.\n\n` +
+        `Request ID: ${requestId}\n` +
+        `Amount: ${formatCurrency(session.data.amountUSD)}\n` +
+        `Method: ${session.data.method}\n` +
+        `Status: Pending Admin Approval`
+      );
+
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      for (const adminId of adminIds) {
+        try {
+          await bot.sendPhoto(adminId, fileId, {
+            caption: `🏛️ New Shareholder Top-Up\n\n` +
+                     `Request ID: ${requestId}\n` +
+                     `Shareholder: ${session.data.shareholderId}\n` +
+                     `Amount: ${formatCurrency(session.data.amountUSD)}\n` +
+                     `Method: ${session.data.method}\n` +
+                     `Ref: ${session.data.txRef || 'N/A'}\n` +
+                     `Caption: ${caption || 'N/A'}\n\n` +
+                     `Approve: /shapprove ${requestId}\n` +
+                     `Reject: /shreject ${requestId} REASON`
+          });
+        } catch (e) {}
+      }
+
+      delete userSessions[chatId];
+      return;
+    } catch (error) {
+      console.log('Error handling shareholder top-up proof:', error.message);
+      await bot.sendMessage(chatId, '❌ Error submitting shareholder proof. Please try again.');
+      return;
+    }
+  }
+
   // Only handle photos in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
@@ -2340,7 +2698,7 @@ bot.onText(/\/start/, async (msg) => {
                             `• M-Pesa Till: 6034186\n` +
                             `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                             `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-                            `• PayPal: dave@starlifeadvert.com\n` +
+                            `• PayPal: starlife.payment@starlifeadvert.com\n` +
                             `Name: Starlife Advert US Agency`;
       
       await bot.sendMessage(chatId, welcomeMessage);
@@ -2369,7 +2727,7 @@ bot.onText(/\/start/, async (msg) => {
   fakeMessage += '• M-Pesa Till: 6034186\n';
   fakeMessage += '• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n';
   fakeMessage += '• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n';
-  fakeMessage += '• PayPal: dave@starlifeadvert.com\n';
+  fakeMessage += '• PayPal: starlife.payment@starlifeadvert.com\n';
   fakeMessage += 'Name: Starlife Advert US Agency';
   
   await bot.sendMessage(chatId, fakeMessage);
@@ -2462,7 +2820,7 @@ bot.onText(/\/help/, async (msg) => {
   helpMessage += `• M-Pesa Till: 6034186\n`;
   helpMessage += `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n`;
   helpMessage += `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n`;
-  helpMessage += `• PayPal: dave@starlifeadvert.com\n`;
+  helpMessage += `• PayPal: starlife.payment@starlifeadvert.com\n`;
   helpMessage += `Name: Starlife Advert US Agency\n\n`;
   helpMessage += `**❓ Need Help?**\n`;
   helpMessage += `Use /support for immediate assistance`;
@@ -2562,7 +2920,7 @@ bot.onText(/\/investnow/, async (msg) => {
                       `Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
                       `📌 Send only USDT (TRC20)\n\n` +
                       `💳 **PayPal:**\n` +
-                      `Email: dave@starlifeadvert.com\n\n` +
+                      `Email: starlife.payment@starlifeadvert.com\n\n` +
                       `**Step 3: Invest**\n` +
                       `Use /invest to start investment\n` +
                       `Minimum: $10 | Maximum: $800,000\n` +
@@ -2643,7 +3001,7 @@ bot.onText(/\/invest/, async (msg) => {
     `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
     `   📌 Send only USDT (TRC20)\n\n` +
     `4️⃣ **PayPal**\n` +
-    `   Email: dave@starlifeadvert.com\n\n` +
+    `   Email: starlife.payment@starlifeadvert.com\n\n` +
     `**Investment Details:**\n` +
     `Minimum Investment: $10\n` +
     `Maximum Investment: $800,000\n` +
@@ -2806,6 +3164,7 @@ bot.onText(/\/profile/, async (msg) => {
   message += `Name: ${user.name}\n`;
   message += `Member ID: ${user.member_id}\n`;
   message += `Email: ${user.email || 'Not set'}\n`;
+  message += `Phone: ${user.phone || 'Not set'}\n`;
   message += `Joined: ${new Date(user.joined_date).toLocaleDateString()}\n`;
   message += `Last Login: ${user.last_login ? new Date(user.last_login).toLocaleDateString() : 'Never'}\n\n`;
   message += `💰 **Financial Summary**\n`;
@@ -3500,21 +3859,17 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId,
         `✅ Current password verified.\n\n` +
         `Enter your new password:\n` +
-        `• At least 6 characters\n` +
-        `• Must include letters and numbers\n\n` +
+        `• At least 8 characters\n` +
+        `• Must include uppercase, lowercase, number, and symbol\n\n` +
         `Enter new password:`
       );
     }
     else if (session.step === 'change_password_new') {
       const newPassword = text.trim();
       
-      if (newPassword.length < 6) {
-        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter new password:');
-        return;
-      }
-      
-      if (!/[a-zA-Z]/.test(newPassword) || !/\d/.test(newPassword)) {
-        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter new password:');
+      const passwordError = getPasswordStrengthError(newPassword, 'new password');
+      if (passwordError) {
+        await bot.sendMessage(chatId, passwordError);
         return;
       }
       
@@ -3572,6 +3927,126 @@ bot.on('message', async (msg) => {
       );
     }
     
+    // Handle shareholder top-up steps
+    else if (session.step === 'awaiting_sh_topup_amount') {
+      const amount = parseFloat(text);
+      if (isNaN(amount) || amount < 10) {
+        await bot.sendMessage(chatId, '❌ Invalid amount. Minimum shareholder top-up is $10. Enter amount in USD:');
+        return;
+      }
+
+      session.data.amountUSD = amount;
+      session.step = 'awaiting_sh_topup_method';
+
+      await bot.sendMessage(chatId,
+        `✅ Amount: ${formatCurrency(amount)}\n\n` +
+        `Choose payment method:\n` +
+        `1. M-Pesa\n2. USDT Tether (BEP20)\n3. USDT TRON (TRC20)\n4. PayPal\n\n` +
+        `Reply with 1-4:`
+      );
+    }
+    else if (session.step === 'awaiting_sh_topup_method') {
+      const methodNumber = parseInt(text);
+      const methods = ['M-Pesa', 'USDT Tether (BEP20)', 'USDT TRON (TRC20)', 'PayPal'];
+      if (isNaN(methodNumber) || methodNumber < 1 || methodNumber > 4) {
+        await bot.sendMessage(chatId, '❌ Invalid choice. Enter a number between 1 and 4.');
+        return;
+      }
+      session.data.method = methods[methodNumber - 1];
+      session.step = 'awaiting_sh_topup_reference';
+      await bot.sendMessage(chatId,
+        `✅ Method: ${session.data.method}\n\n` +
+        `Enter transaction reference/hash (or type N/A if not available):`
+      );
+    }
+    else if (session.step === 'awaiting_sh_topup_reference') {
+      session.data.txRef = text.trim();
+      session.step = 'awaiting_sh_topup_proof';
+      await bot.sendMessage(chatId,
+        `📎 Please upload payment proof screenshot now.\n` +
+        `You can add a caption optionally.`
+      );
+    }
+
+    // Handle shareholder withdrawal request steps
+    else if (session.step === 'awaiting_sh_withdraw_amount') {
+      const amount = parseFloat(text);
+      const sh = await getShareholderByShareholderId(session.data.shareholderId);
+      const available = parseFloat(sh?.earnings_balance_usd || 0);
+
+      if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, '❌ Invalid amount. Enter a valid USD amount:');
+        return;
+      }
+      if (amount > available) {
+        await bot.sendMessage(chatId, `❌ Amount exceeds available shareholder earnings (${formatCurrency(available)}). Enter lower amount:`);
+        return;
+      }
+
+      session.data.withdrawAmountUSD = amount;
+      session.step = 'awaiting_sh_withdraw_method';
+      await bot.sendMessage(chatId,
+        `✅ Amount: ${formatCurrency(amount)}\n\n` +
+        `Enter payout method (e.g., M-Pesa, Bank, PayPal, USDT):`
+      );
+    }
+    else if (session.step === 'awaiting_sh_withdraw_method') {
+      const method = text.trim();
+      if (method.length < 2) {
+        await bot.sendMessage(chatId, '❌ Invalid method. Enter payout method:');
+        return;
+      }
+      session.data.withdrawMethod = method;
+      session.step = 'awaiting_sh_withdraw_details';
+      await bot.sendMessage(chatId, 'Enter payout details (account/phone/wallet):');
+    }
+    else if (session.step === 'awaiting_sh_withdraw_details') {
+      const details = text.trim();
+      if (details.length < 3) {
+        await bot.sendMessage(chatId, '❌ Invalid details. Enter valid payout details:');
+        return;
+      }
+
+      const requestId = `SHW-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO shareholder_withdrawal_requests
+        (request_id, shareholder_id, amount_usd, method, payout_details, status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [requestId, session.data.shareholderId, session.data.withdrawAmountUSD, session.data.withdrawMethod, details, 'pending_admin_approval', new Date()]
+      );
+
+      await logShareholderAudit(null, 'create_shareholder_withdrawal_request', requestId, null, {
+        shareholder_id: session.data.shareholderId,
+        amount_usd: session.data.withdrawAmountUSD,
+        method: session.data.withdrawMethod
+      }, 'User requested shareholder earnings withdrawal');
+
+      delete userSessions[chatId];
+
+      await bot.sendMessage(chatId,
+        `✅ Shareholder withdrawal request submitted.\n\n` +
+        `Request ID: ${requestId}\n` +
+        `Amount: ${formatCurrency(session.data.withdrawAmountUSD)}\n` +
+        `Status: Pending Admin Approval`
+      );
+
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      for (const adminId of adminIds) {
+        try {
+          await bot.sendMessage(adminId,
+            `💸 **New Shareholder Withdrawal Request**\n\n` +
+            `ID: ${requestId}\n` +
+            `Shareholder: ${session.data.shareholderId}\n` +
+            `Amount: ${formatCurrency(session.data.withdrawAmountUSD)}\n` +
+            `Method: ${session.data.withdrawMethod}\n` +
+            `Details: ${details}\n\n` +
+            `Approve: /shwapprove ${requestId}\n` +
+            `Reject: /shwreject ${requestId} REASON`
+          );
+        } catch (e) {}
+      }
+    }
+
     // Handle registration steps
     else if (session.step === 'awaiting_name') {
       const name = text.trim();
@@ -3585,7 +4060,7 @@ bot.on('message', async (msg) => {
       
       await bot.sendMessage(chatId,
         `✅ Name: ${name}\n\n` +
-        `Step 2/4: Enter your email\n\n` +
+        `Step 2/5: Enter your email\n\n` +
         `Example: johndoe@example.com\n` +
         `Enter your email:`
       );
@@ -3598,28 +4073,48 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, '❌ Invalid email format. Please enter a valid email:');
         return;
       }
+
+      const existingEmailUser = await getUserByEmail(email);
+      if (existingEmailUser) {
+        await bot.sendMessage(chatId, '❌ This email is already registered. Please enter a different email:');
+        return;
+      }
       
       session.data.email = email;
-      session.step = 'awaiting_password';
+      session.step = 'awaiting_phone';
       
       await bot.sendMessage(chatId,
         `✅ Email: ${email}\n\n` +
-        `Step 3/4: Create a password\n\n` +
-        `• At least 6 characters\n` +
-        `• Must include letters and numbers\n` +
+        `Step 3/5: Enter your phone number\n\n` +
+        `Include country code (e.g., +254712345678)\n` +
+        `Enter your phone number:`
+      );
+    }
+    else if (session.step === 'awaiting_phone') {
+      const phone = text.trim();
+      const phoneRegex = /^\+\d{7,15}$/;
+
+      if (!phoneRegex.test(phone)) {
+        await bot.sendMessage(chatId, '❌ Invalid phone number. Use country code (e.g., +254712345678):');
+        return;
+      }
+
+      session.data.phone = phone;
+      session.step = 'awaiting_password';
+
+      await bot.sendMessage(chatId,
+        `✅ Phone: ${phone}\n\n` +
+        `Step 4/5: Create a password\n\n` +
+        `• At least 8 characters\n` +
+        `• Must include uppercase, lowercase, number, and symbol\n` +
         `Enter your password:`
       );
     }
     else if (session.step === 'awaiting_password') {
       const password = text.trim();
-      
-      if (password.length < 6) {
-        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter password:');
-        return;
-      }
-      
-      if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter password:');
+      const passwordError = getPasswordStrengthError(password);
+      if (passwordError) {
+        await bot.sendMessage(chatId, passwordError);
         return;
       }
       
@@ -3627,7 +4122,7 @@ bot.on('message', async (msg) => {
       session.step = 'awaiting_confirm_password';
       
       await bot.sendMessage(chatId,
-        `Step 4/4: Confirm your password\n\n` +
+        `Step 5/5: Confirm your password\n\n` +
         `Re-enter your password:`
       );
     }
@@ -3670,10 +4165,11 @@ bot.on('message', async (msg) => {
         telegramAccountId: chatId.toString(),
         name: session.data.name,
         email: session.data.email,
+        phone: session.data.phone,
         passwordHash: hashPassword(session.data.password),
         referralCode: referralCode,
         referredBy: referredBy,
-        balance: 0,
+        balance: 1,
         totalInvested: 0,
         totalEarned: 0,
         referralEarnings: 0,
@@ -3731,7 +4227,9 @@ bot.on('message', async (msg) => {
         welcomeMessage += `Referred By: ${referredBy}\n`;
       }
       
-      welcomeMessage += `\n**IMPORTANT SECURITY:**\n` +
+      welcomeMessage += `\n**Welcome Bonus:**\n` +
+                       `$1.00 has been added to your account balance.\n\n` +
+                       `**IMPORTANT SECURITY:**\n` +
                        `This Telegram account is now PERMANENTLY linked to Member ID: ${memberId}\n` +
                        `You cannot login to any other account with this Telegram account.\n\n` +
                        `**Save your Member ID and Password!**\n` +
@@ -3748,7 +4246,7 @@ bot.on('message', async (msg) => {
                        `• M-Pesa Till: 6034186\n` +
                        `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                        `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-                       `• PayPal: dave@starlifeadvert.com\n` +
+                       `• PayPal: starlife.payment@starlifeadvert.com\n` +
                        `Name: Starlife Advert US Agency\n\n` +
                        `**Quick Commands:**\n` +
                        `/invest - Make investment\n` +
@@ -3780,6 +4278,15 @@ bot.on('message', async (msg) => {
         console.log('Welcome email failed:', emailError.message);
       }
       
+      // Record welcome bonus
+      await createTransaction({
+        id: `TRX-WELCOME-${Date.now()}`,
+        memberId: memberId,
+        type: 'bonus',
+        amount: 1,
+        description: 'Welcome bonus'
+      });
+
       // Record transaction
       await createTransaction({
         id: `TRX-REG-${Date.now()}`,
@@ -3948,7 +4455,7 @@ bot.on('message', async (msg) => {
         `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
         `   📌 Send only USDT (TRC20)\n\n` +
         `4️⃣ **PayPal**\n` +
-        `   Email: dave@starlifeadvert.com\n\n` +
+        `   Email: starlife.payment@starlifeadvert.com\n\n` +
         `Reply with number (1-4):`
       );
     }
@@ -3990,7 +4497,7 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId,
           `✅ Payment Method: PayPal\n\n` +
           `**PayPal Email:**\n` +
-          `dave@starlifeadvert.com\n\n` +
+          `starlife.payment@starlifeadvert.com\n\n` +
           `**Important:**\n` +
           `• Send payment to the email above\n` +
           `• Include your Member ID in the payment note\n\n` +
@@ -4669,6 +5176,172 @@ else if (session && session.step === 'confirm_broadcast') {
   }
 });
 
+// ==================== SHAREHOLDER USER COMMANDS ====================
+
+bot.onText(/\/shareholder/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  try {
+    const sh = await getShareholderByMemberId(user.member_id);
+    if (!sh) {
+      await bot.sendMessage(chatId,
+        `ℹ️ You do not have a shareholder profile yet.
+` +
+        `Ask admin to create one with /createshareholder ${user.member_id}.`
+      );
+      return;
+    }
+
+    const tierResult = await pool.query('SELECT * FROM shareholder_tiers WHERE tier_name = $1 LIMIT 1', [sh.tier]);
+    const tier = tierResult.rows[0] || { benefits_json: [] };
+
+    const stakeRequests = await pool.query(
+      'SELECT * FROM shareholder_stake_requests WHERE shareholder_id = $1 ORDER BY created_at DESC LIMIT 5',
+      [sh.shareholder_id]
+    );
+
+    const lockDaysLeft = getShareholderLockDaysRemaining(sh.lock_start_date || sh.activation_date);
+
+    let message = `🏛️ **Shareholders Dashboard**
+
+`;
+    message += `👤 **Shareholder Profile**
+`;
+    message += `Name: ${user.name}
+`;
+    message += `Member ID: ${user.member_id}
+`;
+    message += `Shareholder ID: ${sh.shareholder_id}
+`;
+    message += `Email: ${user.email || 'N/A'}
+`;
+    message += `Phone: ${user.phone || 'N/A'}
+`;
+    message += `Status: ${sh.status}
+`;
+    message += `Tier: ${sh.tier}
+
+`;
+
+    message += `💵 **Stake Overview (USD)**
+`;
+    message += `Total Stake: ${formatCurrency(sh.total_stake_usd || 0)}
+`;
+    message += `Activation Date: ${new Date(sh.activation_date).toLocaleDateString()}
+
+`;
+
+    message += `🎁 **Benefits / Allowances**
+`;
+    const benefits = Array.isArray(tier.benefits_json) ? tier.benefits_json : [];
+    message += benefits.length ? benefits.map(b => `• ${b}`).join('\n') : '• No configured benefits yet';
+    message += `
+
+`;
+
+    message += `📈 **Earnings Status**
+`;
+    message += `Earnings Status: ${sh.earnings_status}
+`;
+    message += `Earnings Balance: ${formatCurrency(sh.earnings_balance_usd || 0)}
+`;
+    message += lockDaysLeft > 0
+      ? `Withdrawal Lock: ${lockDaysLeft} day(s) remaining
+\n`
+      : `Withdrawal Lock: Eligible now ✅\n\n`;
+
+    message += `🧾 **Recent Stake Requests**
+`;
+    if (stakeRequests.rows.length === 0) {
+      message += `No stake requests yet.
+`;
+    } else {
+      stakeRequests.rows.forEach((r, i) => {
+        message += `${i + 1}. ${new Date(r.created_at).toLocaleDateString()} | ${formatCurrency(r.amount_usd)} | ${r.method || 'N/A'} | ${r.status}\n`;
+      });
+    }
+
+    message += `\n**Commands:**\n`;
+    message += `/sh_topup - Top Up Stake\n`;
+    message += `/sh_withdraw - Withdraw Shareholder Earnings`;
+
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /shareholder:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading shareholder dashboard.');
+  }
+});
+
+bot.onText(/\/sh_topup/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const sh = await getShareholderByMemberId(user.member_id);
+  if (!sh) {
+    await bot.sendMessage(chatId, '❌ You are not a shareholder. Contact admin.');
+    return;
+  }
+
+  userSessions[chatId] = {
+    step: 'awaiting_sh_topup_amount',
+    data: { memberId: user.member_id, shareholderId: sh.shareholder_id }
+  };
+
+  await bot.sendMessage(chatId,
+    `💵 **Shareholder Top-Up (USD)**\n\n` +
+    `Enter top-up amount in USD (minimum $10):`
+  );
+});
+
+bot.onText(/\/sh_withdraw/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const sh = await getShareholderByMemberId(user.member_id);
+  if (!sh) {
+    await bot.sendMessage(chatId, '❌ You are not a shareholder. Contact admin.');
+    return;
+  }
+
+  const daysLeft = getShareholderLockDaysRemaining(sh.lock_start_date || sh.activation_date);
+  if (daysLeft > 0) {
+    await bot.sendMessage(chatId,
+      `⏳ Shareholder withdrawals are locked for 6 months.\n` +
+      `Remaining: ${daysLeft} day(s).`
+    );
+    return;
+  }
+
+  if (parseFloat(sh.earnings_balance_usd || 0) <= 0) {
+    await bot.sendMessage(chatId, '❌ You have no shareholder earnings available to withdraw.');
+    return;
+  }
+
+  userSessions[chatId] = {
+    step: 'awaiting_sh_withdraw_amount',
+    data: { memberId: user.member_id, shareholderId: sh.shareholder_id }
+  };
+
+  await bot.sendMessage(chatId,
+    `💸 **Shareholder Earnings Withdrawal**\n\n` +
+    `Available Earnings: ${formatCurrency(sh.earnings_balance_usd)}\n` +
+    `Enter withdrawal amount (USD):`
+  );
+});
+
 // ==================== ADMIN COMMANDS ====================
 
 // ADMIN COMMANDS
@@ -4694,6 +5367,9 @@ bot.onText(/\/admin/, async (msg) => {
                       `/findref REF_CODE - Find user by referral code\n` +
                       `/message USER_ID - Message user directly\n` +
                       `/checkbinding USER_ID - Check Telegram binding\n\n` +
+                      `/binduser USER_ID CHAT_ID - Bind Telegram account\n` +
+                      `/unbinduser USER_ID - Unbind Telegram account\n` +
+                      `/edituser USER_ID FIELD VALUE - Edit user details (name/email/phone)\n\n` +
                       `💰 **Financial Management:**\n` +
                       `/addbalance USER_ID AMOUNT - Add balance\n` +
                       `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
@@ -4711,6 +5387,20 @@ bot.onText(/\/admin/, async (msg) => {
                       `👥 **Referral Management:**\n` +
                       `/referrals - List all referrals\n` +
                       `/addrefbonus USER_ID AMOUNT - Add referral bonus\n\n` +
+                      `🏛️ **Shareholder Management:**\n` +
+                      `/createshareholder USER_ID - Create shareholder profile\n` +
+                      `/shpending - List pending shareholder requests\n` +
+                      `/shapprove SHT_ID - Approve stake top-up\n` +
+                      `/shreject SHT_ID REASON - Reject stake top-up\n` +
+                      `/shwapprove SHW_ID - Approve shareholder withdrawal\n` +
+                      `/shwreject SHW_ID REASON - Reject shareholder withdrawal\n` +
+                      `/shadjust USER_ID AMOUNT REASON - Manual stake adjustment\n` +
+                      `/shsetstatus USER_ID STATUS - Set shareholder status\n` +
+                      `/shsuspend USER_ID - Suspend shareholder earnings\n` +
+                      `/shunsuspend USER_ID - Unsuspend shareholder earnings\n` +
+                      `/shdelete USER_ID - Delete shareholder profile\n` +
+                      `/shfind QUERY - Search shareholders\n` +
+                      `/shaudit TARGET - Shareholder audit logs\n\n` +
                       `🆘 **Support Management:**\n` +
                       `/supportchats - View active chats\n` +
                       `/viewchat CHAT_ID - View specific chat\n` +
@@ -4721,6 +5411,545 @@ bot.onText(/\/admin/, async (msg) => {
                       `/broadcast MESSAGE - Send to all users`;
   
   await bot.sendMessage(chatId, adminMessage);
+});
+
+// ==================== SHAREHOLDER ADMIN COMMANDS ====================
+
+bot.onText(/\/createshareholder (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const sh = await createShareholderProfile(memberId, chatId);
+    const user = await getUserByMemberId(memberId);
+    await bot.sendMessage(chatId,
+      `✅ Shareholder profile ready.\n` +
+      `User: ${user?.name || memberId} (${memberId})\n` +
+      `Shareholder ID: ${sh.shareholder_id}\n` +
+      `Tier: ${sh.tier}\n` +
+      `Status: ${sh.status}`
+    );
+  } catch (error) {
+    console.log('Error in /createshareholder:', error.message);
+    await bot.sendMessage(chatId, `❌ ${error.message}`);
+  }
+});
+
+bot.onText(/\/shpending/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  try {
+    const topups = await pool.query("SELECT * FROM shareholder_stake_requests WHERE status = 'pending_admin_approval' ORDER BY created_at DESC LIMIT 10");
+    const wds = await pool.query("SELECT * FROM shareholder_withdrawal_requests WHERE status = 'pending_admin_approval' ORDER BY created_at DESC LIMIT 10");
+
+    let message = `🏛️ **Pending Shareholder Requests**\n\n`;
+    message += `**Top-Ups:** ${topups.rows.length}\n`;
+    topups.rows.forEach((r, i) => {
+      message += `${i + 1}. ${r.request_id} | ${r.shareholder_id} | ${formatCurrency(r.amount_usd)} | ${r.method || 'N/A'}\n`;
+    });
+    message += `\n**Withdrawals:** ${wds.rows.length}\n`;
+    wds.rows.forEach((r, i) => {
+      message += `${i + 1}. ${r.request_id} | ${r.shareholder_id} | ${formatCurrency(r.amount_usd)} | ${r.method || 'N/A'}\n`;
+    });
+
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /shpending:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading shareholder pending requests.');
+  }
+});
+
+bot.onText(/\/shapprove (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const requestId = match[1].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const reqResult = await pool.query('SELECT * FROM shareholder_stake_requests WHERE request_id = $1', [requestId]);
+    const req = reqResult.rows[0];
+    if (!req) return bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+    if (req.status !== 'pending_admin_approval') return bot.sendMessage(chatId, `⚠️ Request ${requestId} is already ${req.status}.`);
+
+    const sh = await getShareholderByShareholderId(req.shareholder_id);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+
+    const before = { ...sh };
+    const added = parseFloat(req.amount_usd || 0);
+    const newStake = parseFloat(sh.total_stake_usd || 0) + added;
+    const tier = await getShareholderTierByStake(newStake);
+
+    const updated = await updateShareholder(sh.shareholder_id, {
+      total_stake_usd: newStake,
+      tier: tier.tier_name,
+      last_stake_activation_date: new Date()
+    });
+
+    await pool.query(
+      `UPDATE shareholder_stake_requests SET status = $1, proof_status = $2, decided_at = $3, decided_by = $4 WHERE request_id = $5`,
+      ['approved', 'verified', new Date(), chatId.toString(), requestId]
+    );
+
+    await createShareholderStakeHistory({
+      historyId: `SHH-${Date.now()}`,
+      shareholderId: sh.shareholder_id,
+      amountUSD: added,
+      type: 'topup',
+      ref: requestId
+    });
+
+    await logShareholderAudit(chatId, 'approve_shareholder_topup', requestId, before, updated, 'Approved shareholder top-up');
+
+    await bot.sendMessage(chatId,
+      `✅ Top-up approved.\n` +
+      `Request: ${requestId}\n` +
+      `Shareholder: ${sh.shareholder_id}\n` +
+      `Added: ${formatCurrency(added)}\n` +
+      `New Stake: ${formatCurrency(newStake)}\n` +
+      `Tier: ${updated.tier}`
+    );
+
+    await sendUserNotification(sh.member_id,
+      `✅ **Shareholder Top-Up Approved**\n\n` +
+      `Request ID: ${requestId}\n` +
+      `Amount Added: ${formatCurrency(added)}\n` +
+      `New Total Stake: ${formatCurrency(newStake)}\n` +
+      `Tier: ${updated.tier}`
+    );
+  } catch (error) {
+    console.log('Error in /shapprove:', error.message);
+    await bot.sendMessage(chatId, '❌ Error approving shareholder top-up.');
+  }
+});
+
+bot.onText(/\/shreject (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const requestId = match[1].trim();
+  const reason = match[2].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const reqResult = await pool.query('SELECT * FROM shareholder_stake_requests WHERE request_id = $1', [requestId]);
+    const req = reqResult.rows[0];
+    if (!req) return bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+    if (req.status !== 'pending_admin_approval') return bot.sendMessage(chatId, `⚠️ Request ${requestId} is already ${req.status}.`);
+
+    await pool.query(
+      `UPDATE shareholder_stake_requests SET status = $1, admin_reason = $2, decided_at = $3, decided_by = $4 WHERE request_id = $5`,
+      ['rejected', reason, new Date(), chatId.toString(), requestId]
+    );
+
+    const sh = await getShareholderByShareholderId(req.shareholder_id);
+    await logShareholderAudit(chatId, 'reject_shareholder_topup', requestId, req, null, reason);
+
+    await bot.sendMessage(chatId, `✅ Top-up request ${requestId} rejected.`);
+    if (sh) {
+      await sendUserNotification(sh.member_id,
+        `❌ **Shareholder Top-Up Rejected**\n\n` +
+        `Request ID: ${requestId}\nReason: ${reason}`
+      );
+    }
+  } catch (error) {
+    console.log('Error in /shreject:', error.message);
+    await bot.sendMessage(chatId, '❌ Error rejecting shareholder top-up.');
+  }
+});
+
+bot.onText(/\/shwapprove (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const requestId = match[1].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const reqResult = await pool.query('SELECT * FROM shareholder_withdrawal_requests WHERE request_id = $1', [requestId]);
+    const req = reqResult.rows[0];
+    if (!req) return bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+    if (req.status !== 'pending_admin_approval') return bot.sendMessage(chatId, `⚠️ Request ${requestId} is already ${req.status}.`);
+
+    const sh = await getShareholderByShareholderId(req.shareholder_id);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+
+    const amount = parseFloat(req.amount_usd || 0);
+    const balance = parseFloat(sh.earnings_balance_usd || 0);
+    if (amount > balance) return bot.sendMessage(chatId, '❌ Insufficient shareholder earnings balance.');
+
+    const before = { ...sh };
+    const updated = await updateShareholder(sh.shareholder_id, {
+      earnings_balance_usd: balance - amount
+    });
+
+    await pool.query(
+      `UPDATE shareholder_withdrawal_requests SET status = $1, decided_at = $2, decided_by = $3 WHERE request_id = $4`,
+      ['approved', new Date(), chatId.toString(), requestId]
+    );
+
+    await logShareholderAudit(chatId, 'approve_shareholder_withdrawal', requestId, before, updated, 'Approved shareholder earnings withdrawal');
+
+    await bot.sendMessage(chatId, `✅ Shareholder withdrawal approved: ${requestId}`);
+    await sendUserNotification(sh.member_id,
+      `✅ **Shareholder Withdrawal Approved**\n\n` +
+      `Request ID: ${requestId}\nAmount: ${formatCurrency(amount)}\n` +
+      `Remaining Earnings Balance: ${formatCurrency(updated.earnings_balance_usd || 0)}`
+    );
+  } catch (error) {
+    console.log('Error in /shwapprove:', error.message);
+    await bot.sendMessage(chatId, '❌ Error approving shareholder withdrawal.');
+  }
+});
+
+bot.onText(/\/shwreject (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const requestId = match[1].trim();
+  const reason = match[2].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const reqResult = await pool.query('SELECT * FROM shareholder_withdrawal_requests WHERE request_id = $1', [requestId]);
+    const req = reqResult.rows[0];
+    if (!req) return bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+
+    await pool.query(
+      `UPDATE shareholder_withdrawal_requests SET status = $1, admin_reason = $2, decided_at = $3, decided_by = $4 WHERE request_id = $5`,
+      ['rejected', reason, new Date(), chatId.toString(), requestId]
+    );
+
+    const sh = await getShareholderByShareholderId(req.shareholder_id);
+    await logShareholderAudit(chatId, 'reject_shareholder_withdrawal', requestId, req, null, reason);
+
+    await bot.sendMessage(chatId, `✅ Shareholder withdrawal rejected: ${requestId}`);
+    if (sh) {
+      await sendUserNotification(sh.member_id,
+        `❌ **Shareholder Withdrawal Rejected**\n\n` +
+        `Request ID: ${requestId}\nReason: ${reason}`
+      );
+    }
+  } catch (error) {
+    console.log('Error in /shwreject:', error.message);
+    await bot.sendMessage(chatId, '❌ Error rejecting shareholder withdrawal.');
+  }
+});
+
+bot.onText(/\/shadjust (.+?) (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const amount = parseFloat(match[2]);
+  const reason = match[3].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  if (isNaN(amount) || amount === 0) return bot.sendMessage(chatId, '❌ Invalid amount. Use non-zero amount.');
+
+  try {
+    const sh = await getShareholderByMemberId(memberId);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+
+    const before = { ...sh };
+    const newStake = Math.max(0, parseFloat(sh.total_stake_usd || 0) + amount);
+    const tier = await getShareholderTierByStake(newStake);
+    const updated = await updateShareholder(sh.shareholder_id, { total_stake_usd: newStake, tier: tier.tier_name });
+
+    await createShareholderStakeHistory({
+      historyId: `SHH-${Date.now()}`,
+      shareholderId: sh.shareholder_id,
+      amountUSD: amount,
+      type: 'adjustment',
+      ref: `ADMIN-${chatId}`
+    });
+
+    await logShareholderAudit(chatId, 'manual_shareholder_stake_adjustment', sh.shareholder_id, before, updated, reason);
+
+    await bot.sendMessage(chatId,
+      `✅ Stake adjusted for ${memberId}.\n` +
+      `Change: ${formatCurrency(amount)}\n` +
+      `New Stake: ${formatCurrency(newStake)}\n` +
+      `Tier: ${updated.tier}`
+    );
+
+    await sendUserNotification(memberId,
+      `🏛️ **Shareholder Stake Adjusted**\n\n` +
+      `Adjustment: ${formatCurrency(amount)}\n` +
+      `New Stake: ${formatCurrency(newStake)}\n` +
+      `Reason: ${reason}`
+    );
+  } catch (error) {
+    console.log('Error in /shadjust:', error.message);
+    await bot.sendMessage(chatId, '❌ Error adjusting shareholder stake.');
+  }
+});
+
+bot.onText(/\/shsetstatus (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const statusRaw = match[2].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const normalized = statusRaw.toLowerCase();
+  const map = {
+    active: 'active',
+    suspended: 'suspended',
+    under_review: 'under_review',
+    'under review': 'under_review'
+  };
+  const status = map[normalized];
+  if (!status) return bot.sendMessage(chatId, '❌ Invalid status. Use: active | suspended | under_review');
+
+  try {
+    const sh = await getShareholderByMemberId(memberId);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+    const before = { ...sh };
+    const updated = await updateShareholder(sh.shareholder_id, { status });
+    await logShareholderAudit(chatId, 'set_shareholder_status', sh.shareholder_id, before, updated, `status=${status}`);
+    await bot.sendMessage(chatId, `✅ Shareholder status updated to ${status} for ${memberId}.`);
+  } catch (error) {
+    console.log('Error in /shsetstatus:', error.message);
+    await bot.sendMessage(chatId, '❌ Error setting shareholder status.');
+  }
+});
+
+bot.onText(/\/shsuspend (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const sh = await getShareholderByMemberId(memberId);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+    const updated = await updateShareholder(sh.shareholder_id, { earnings_status: 'suspended', status: sh.status === 'active' ? 'suspended' : sh.status, suspended: true });
+    await logShareholderAudit(chatId, 'suspend_shareholder_earnings', sh.shareholder_id, sh, updated, 'Suspended shareholder earnings');
+    await bot.sendMessage(chatId, `✅ Shareholder earnings suspended for ${memberId}.`);
+  } catch (error) {
+    console.log('Error in /shsuspend:', error.message);
+    await bot.sendMessage(chatId, '❌ Error suspending shareholder earnings.');
+  }
+});
+
+bot.onText(/\/shunsuspend (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const sh = await getShareholderByMemberId(memberId);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+    const updated = await updateShareholder(sh.shareholder_id, { earnings_status: 'active', status: 'active', suspended: false });
+    await logShareholderAudit(chatId, 'unsuspend_shareholder_earnings', sh.shareholder_id, sh, updated, 'Unsuspended shareholder earnings');
+    await bot.sendMessage(chatId, `✅ Shareholder earnings unsuspended for ${memberId}.`);
+  } catch (error) {
+    console.log('Error in /shunsuspend:', error.message);
+    await bot.sendMessage(chatId, '❌ Error unsuspending shareholder earnings.');
+  }
+});
+
+bot.onText(/\/shdelete (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const sh = await getShareholderByMemberId(memberId);
+    if (!sh) return bot.sendMessage(chatId, '❌ Shareholder profile not found.');
+    await pool.query('DELETE FROM shareholders WHERE member_id = $1', [memberId]);
+    await logShareholderAudit(chatId, 'delete_shareholder_profile', sh.shareholder_id, sh, null, 'Deleted shareholder profile only');
+    await bot.sendMessage(chatId, `✅ Shareholder profile deleted for ${memberId}. Main user account remains intact.`);
+  } catch (error) {
+    console.log('Error in /shdelete:', error.message);
+    await bot.sendMessage(chatId, '❌ Error deleting shareholder profile.');
+  }
+});
+
+bot.onText(/\/shfind (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const query = match[1].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const result = await pool.query(
+      `SELECT s.*, u.name, u.email, u.phone FROM shareholders s
+       JOIN users u ON u.member_id = s.member_id
+       WHERE s.member_id ILIKE $1 OR s.shareholder_id ILIKE $1
+       ORDER BY s.created_at DESC LIMIT 20`,
+      [`%${query}%`]
+    );
+
+    if (result.rows.length === 0) {
+      await bot.sendMessage(chatId, '📭 No shareholders found.');
+      return;
+    }
+
+    let message = `🏛️ **Shareholder Search Results** (${result.rows.length})\n\n`;
+    result.rows.forEach((r, i) => {
+      message += `${i + 1}. ${r.name} (${r.member_id})\n`;
+      message += `   Shareholder ID: ${r.shareholder_id}\n`;
+      message += `   Stake: ${formatCurrency(r.total_stake_usd)} | Tier: ${r.tier} | Status: ${r.status}\n`;
+    });
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /shfind:', error.message);
+    await bot.sendMessage(chatId, '❌ Error finding shareholders.');
+  }
+});
+
+bot.onText(/\/shaudit (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const target = match[1].trim();
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  try {
+    const result = await pool.query(
+      'SELECT * FROM shareholder_audit_log WHERE target_id ILIKE $1 ORDER BY timestamp DESC LIMIT 15',
+      [`%${target}%`]
+    );
+
+    if (result.rows.length === 0) {
+      await bot.sendMessage(chatId, '📭 No shareholder audit logs found.');
+      return;
+    }
+
+    let message = `🧾 **Shareholder Audit Log**\n\n`;
+    result.rows.forEach((r, i) => {
+      message += `${i + 1}. ${new Date(r.timestamp).toLocaleString()}\n`;
+      message += `   Action: ${r.action}\n`;
+      message += `   Target: ${r.target_id || 'N/A'}\n`;
+      message += `   Admin: ${r.admin_id || 'system'}\n`;
+      message += `   Reason: ${r.reason || 'N/A'}\n\n`;
+    });
+
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /shaudit:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading shareholder audit logs.');
+  }
+});
+
+// Bind Telegram account to user (admin override)
+bot.onText(/\/binduser (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const targetChatId = match[2].trim();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    await updateUser(memberId, {
+      chat_id: targetChatId,
+      telegram_account_id: targetChatId,
+      account_bound: true
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ **Telegram Account Bound**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `New Chat ID: ${targetChatId}\n` +
+      `Binding Status: ✅ BOUND`
+    );
+
+    // Notify user if possible
+    await sendUserNotification(memberId,
+      `🔒 **Account Binding Updated**\n\n` +
+      `Your account has been bound to this Telegram account by an administrator.\n\n` +
+      `If this wasn't requested, contact support with /support.`
+    );
+  } catch (error) {
+    console.log('Error in /binduser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error binding Telegram account.');
+  }
+});
+
+// Unbind Telegram account from user (admin override)
+bot.onText(/\/unbinduser (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    await updateUser(memberId, {
+      chat_id: null,
+      telegram_account_id: null,
+      account_bound: false
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ **Telegram Account Unbound**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `Binding Status: ❌ NOT BOUND`
+    );
+  } catch (error) {
+    console.log('Error in /unbinduser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error unbinding Telegram account.');
+  }
+});
+
+// Edit user details (admin override)
+bot.onText(/\/edituser (.+?) (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const field = match[2].toLowerCase();
+  const value = match[3].trim();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  if (!['name', 'email', 'phone'].includes(field)) {
+    await bot.sendMessage(chatId, '❌ Invalid field. Use: /edituser USER_ID name|email|phone VALUE');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    let updates;
+    if (field === 'name') {
+      updates = { name: value };
+    } else if (field === 'email') {
+      updates = { email: value };
+    } else {
+      updates = { phone: value };
+    }
+    const updatedUser = await updateUser(memberId, updates);
+
+    await bot.sendMessage(chatId,
+      `✅ **User Updated**\n\n` +
+      `User: ${updatedUser.name} (${memberId})\n` +
+      `Updated ${field}: ${value}`
+    );
+
+    // Notify user
+    await sendUserNotification(memberId,
+      `✅ **Account Details Updated**\n\n` +
+      `Your ${field} has been updated by an administrator.\n` +
+      `New ${field}: ${value}\n\n` +
+      `If this wasn't requested, contact support with /support.`
+    );
+  } catch (error) {
+    console.log('Error in /edituser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error updating user details.');
+  }
 });
 
 // Check Telegram binding for user
@@ -5098,6 +6327,7 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `Name: ${user.name}\n` +
                    `Member ID: ${user.member_id}\n` +
                    `Email: ${user.email || 'N/A'}\n` +
+                   `Phone: ${user.phone || 'N/A'}\n` +
                    `Chat ID: ${user.chat_id || 'N/A'}\n` +
                    `Telegram Account ID: ${user.telegram_account_id || 'N/A'}\n` +
                    `Account Bound: ${user.account_bound ? '✅ Yes' : '❌ No'}\n` +
@@ -5808,8 +7038,7 @@ bot.onText(/\/forceprofit (.+)/, async (msg, match) => {
       
       await updateInvestment(investment.investment_id, {
         total_profit: newTotalProfit,
-        days_active: newDaysActive,
-        updated_at: new Date()
+        days_active: newDaysActive
       });
       
       // Record transaction
@@ -5951,7 +7180,8 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
     // Update user's total invested and active investments count
     const user = await getUserByMemberId(investment.member_id);
     if (user) {
-      const newTotalInvested = parseFloat(user.total_invested || 0) + investment.amount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const newTotalInvested = parseFloat(user.total_invested || 0) + investmentAmount;
       const newActiveInvestments = (user.active_investments || 0) + 1;
       
       await updateUser(investment.member_id, {
@@ -5963,7 +7193,7 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       if (user.referred_by && isFirstInvestment) {
         const referrer = await getUserByReferralCode(user.referred_by);
         if (referrer) {
-          const referralBonus = calculateReferralBonus(investment.amount);
+          const referralBonus = calculateReferralBonus(investmentAmount);
           
           // Update referrer's balance and referral earnings
           const newReferrerBalance = parseFloat(referrer.balance || 0) + referralBonus;
@@ -5987,7 +7217,7 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
                 status: 'paid',
                 bonus_amount: referralBonus,
                 bonus_paid: true,
-                investment_amount: investment.amount,
+                investment_amount: investmentAmount,
                 paid_at: new Date(),
                 is_first_investment: false
               });
@@ -6188,7 +7418,7 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
 });
 
 // View payment proof
-bot.onText(/\/viewproof (.+)/, async (msg, match) => {
+bot.onText(/\/vi+ewproof (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const investmentId = match[1];
   
@@ -6216,8 +7446,8 @@ bot.onText(/\/viewproof (.+)/, async (msg, match) => {
     }
     
     // Get proof media
-    const mediaFiles = await getMediaFilesByChat(investmentId);
-    const proof = mediaFiles.find(m => m.investment_id === investmentId);
+    const mediaFiles = await getMediaFilesByInvestmentId(investmentId);
+    const proof = mediaFiles[0];
     
     if (!proof) {
       await bot.sendMessage(chatId, `❌ No proof found for investment ${investmentId}.`);
@@ -6429,8 +7659,9 @@ bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
     for (let investment of userInvestments.reverse()) {
       if (remaining <= 0) break;
       
-      const deductAmount = Math.min(investment.amount, remaining);
-      const newAmount = investment.amount - deductAmount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const deductAmount = Math.min(investmentAmount, remaining);
+      const newAmount = investmentAmount - deductAmount;
       remaining -= deductAmount;
       
       // Update investment
@@ -6813,7 +8044,7 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     // Refund amount to user balance
     const user = await getUserByMemberId(withdrawal.member_id);
     if (user) {
-      const newBalance = parseFloat(user.balance || 0) + withdrawal.amount;
+      const newBalance = parseFloat(user.balance || 0) + parseFloat(withdrawal.amount || 0);
       await updateUser(withdrawal.member_id, { balance: newBalance });
     }
     
