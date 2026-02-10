@@ -1674,7 +1674,150 @@ async function createShareholderAuditLog({ adminId, action, targetId, beforeStat
   }
 }
 
+let shareholderSchemaInitPromise = null;
+
+async function ensureShareholderSchemaReady() {
+  if (shareholderSchemaInitPromise) {
+    return shareholderSchemaInitPromise;
+  }
+
+  shareholderSchemaInitPromise = (async () => {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholders (
+          id SERIAL PRIMARY KEY,
+          shareholder_id VARCHAR(50) UNIQUE NOT NULL,
+          member_id VARCHAR(50) UNIQUE NOT NULL,
+          activation_date TIMESTAMP,
+          status VARCHAR(20) DEFAULT 'under_review',
+          tier VARCHAR(100),
+          total_stake_usd DECIMAL(15,2) DEFAULT 0.00,
+          lock_from_last_activation BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholder_stake_requests (
+          id SERIAL PRIMARY KEY,
+          request_id VARCHAR(50) UNIQUE NOT NULL,
+          shareholder_id VARCHAR(50) NOT NULL,
+          amount_usd DECIMAL(15,2) NOT NULL,
+          method VARCHAR(50),
+          proof_file_id VARCHAR(255),
+          proof_file_type VARCHAR(50),
+          proof_reference VARCHAR(255),
+          status VARCHAR(30) DEFAULT 'pending_proof',
+          admin_reason TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          decided_at TIMESTAMP,
+          decided_by VARCHAR(100)
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholder_stake_history (
+          id SERIAL PRIMARY KEY,
+          shareholder_id VARCHAR(50) NOT NULL,
+          amount_usd DECIMAL(15,2) NOT NULL,
+          type VARCHAR(30) NOT NULL,
+          ref VARCHAR(100),
+          note TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholder_earnings (
+          id SERIAL PRIMARY KEY,
+          shareholder_id VARCHAR(50) UNIQUE NOT NULL,
+          earnings_balance_usd DECIMAL(15,2) DEFAULT 0.00,
+          status VARCHAR(20) DEFAULT 'pending_review',
+          next_payout_date TIMESTAMP,
+          last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholder_withdrawal_requests (
+          id SERIAL PRIMARY KEY,
+          request_id VARCHAR(50) UNIQUE NOT NULL,
+          shareholder_id VARCHAR(50) NOT NULL,
+          amount_usd DECIMAL(15,2) NOT NULL,
+          payout_method VARCHAR(50) NOT NULL,
+          payout_details TEXT NOT NULL,
+          status VARCHAR(30) DEFAULT 'pending_admin_approval',
+          admin_reason TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          decided_at TIMESTAMP,
+          decided_by VARCHAR(100)
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholder_tiers (
+          id SERIAL PRIMARY KEY,
+          tier_name VARCHAR(100) UNIQUE NOT NULL,
+          min_usd DECIMAL(15,2) NOT NULL,
+          benefits_json JSONB DEFAULT '[]',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS shareholder_audit_log (
+          id SERIAL PRIMARY KEY,
+          admin_id VARCHAR(100) NOT NULL,
+          action VARCHAR(100) NOT NULL,
+          target_id VARCHAR(100) NOT NULL,
+          before_state JSONB,
+          after_state JSONB,
+          reason TEXT,
+          timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_shareholders_member_id ON shareholders(member_id);
+        CREATE INDEX IF NOT EXISTS idx_shareholders_shareholder_id ON shareholders(shareholder_id);
+        CREATE INDEX IF NOT EXISTS idx_shareholders_status ON shareholders(status);
+        CREATE INDEX IF NOT EXISTS idx_sh_stake_requests_shareholder_id ON shareholder_stake_requests(shareholder_id);
+        CREATE INDEX IF NOT EXISTS idx_sh_stake_requests_status ON shareholder_stake_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_sh_stake_requests_request_id ON shareholder_stake_requests(request_id);
+        CREATE INDEX IF NOT EXISTS idx_sh_stake_history_shareholder_id ON shareholder_stake_history(shareholder_id);
+        CREATE INDEX IF NOT EXISTS idx_sh_earnings_shareholder_id ON shareholder_earnings(shareholder_id);
+        CREATE INDEX IF NOT EXISTS idx_sh_withdrawal_requests_shareholder_id ON shareholder_withdrawal_requests(shareholder_id);
+        CREATE INDEX IF NOT EXISTS idx_sh_withdrawal_requests_status ON shareholder_withdrawal_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_sh_withdrawal_requests_request_id ON shareholder_withdrawal_requests(request_id);
+        CREATE INDEX IF NOT EXISTS idx_sh_tiers_min_usd ON shareholder_tiers(min_usd);
+      `);
+
+      const tierCount = await pool.query('SELECT COUNT(*) FROM shareholder_tiers');
+      if (parseInt(tierCount.rows[0].count, 10) === 0) {
+        await pool.query(
+          `INSERT INTO shareholder_tiers (tier_name, min_usd, benefits_json)
+           VALUES
+           ('Bronze', 100.00, '["Transport allowance"]'::jsonb),
+           ('Silver', 500.00, '["Transport allowance", "Daily expenses allowance"]'::jsonb),
+           ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb)
+          `
+        );
+      }
+    } catch (error) {
+      shareholderSchemaInitPromise = null;
+      throw error;
+    }
+  })();
+
+  return shareholderSchemaInitPromise;
+}
+
+
 async function getShareholderByMemberId(memberId) {
+  await ensureShareholderSchemaReady();
   try {
     const result = await pool.query('SELECT * FROM shareholders WHERE member_id = $1', [memberId]);
     return result.rows[0] || null;
@@ -1685,6 +1828,7 @@ async function getShareholderByMemberId(memberId) {
 }
 
 async function getShareholderByShareholderId(shareholderId) {
+  await ensureShareholderSchemaReady();
   try {
     const result = await pool.query('SELECT * FROM shareholders WHERE shareholder_id = $1', [shareholderId]);
     return result.rows[0] || null;
@@ -1695,6 +1839,7 @@ async function getShareholderByShareholderId(shareholderId) {
 }
 
 async function getShareholderTiers() {
+  await ensureShareholderSchemaReady();
   try {
     const result = await pool.query('SELECT * FROM shareholder_tiers ORDER BY min_usd ASC');
     return result.rows;
@@ -1705,30 +1850,25 @@ async function getShareholderTiers() {
 }
 
 async function generateShareholderIdForUser(userName) {
+  await ensureShareholderSchemaReady();
   const year = new Date().getFullYear();
   const initials = getInitials(userName);
   const prefixPattern = `SHA-${year}-${initials}`;
 
   const result = await pool.query(
-    `SELECT shareholder_id FROM shareholders
-     WHERE shareholder_id LIKE $1
-     ORDER BY shareholder_id DESC
-     LIMIT 1`,
+    `SELECT COALESCE(MAX((regexp_match(shareholder_id, '-([0-9]+)-[^-]+$'))[1]::int), 0) as max_seq
+     FROM shareholders
+     WHERE shareholder_id LIKE $1`,
     [`${prefixPattern}-%-${SHAREHOLDER_ID_SUFFIX}`]
   );
 
-  let seq = 1;
-  if (result.rows[0]?.shareholder_id) {
-    const matches = result.rows[0].shareholder_id.match(/-(\d{2,})-/);
-    if (matches && matches[1]) {
-      seq = parseInt(matches[1], 10) + 1;
-    }
-  }
+  const seq = (parseInt(result.rows[0]?.max_seq || 0, 10) || 0) + 1;
 
   return `SHA-${year}-${initials}-${String(seq).padStart(2, '0')}-${SHAREHOLDER_ID_SUFFIX}`;
 }
 
 async function ensureShareholderEarningsRecord(shareholderId) {
+  await ensureShareholderSchemaReady();
   await pool.query(
     `INSERT INTO shareholder_earnings (shareholder_id, earnings_balance_usd, status, last_update)
      VALUES ($1, 0.00, 'active', CURRENT_TIMESTAMP)
@@ -1738,6 +1878,7 @@ async function ensureShareholderEarningsRecord(shareholderId) {
 }
 
 async function getShareholderDashboard(memberId) {
+  await ensureShareholderSchemaReady();
   const user = await getUserByMemberId(memberId);
   if (!user) return null;
 
@@ -1766,6 +1907,7 @@ async function getShareholderDashboard(memberId) {
 }
 
 async function createShareholderProfile(memberId, adminId, reason = 'Admin created shareholder profile') {
+  await ensureShareholderSchemaReady();
   const user = await getUserByMemberId(memberId);
   if (!user) throw new Error('User not found');
 
@@ -1823,6 +1965,7 @@ function formatRemainingLockTime(ms) {
 }
 
 async function recomputeShareholderTierAndStake(shareholderId) {
+  await ensureShareholderSchemaReady();
   const stakeSum = await pool.query(
     `SELECT COALESCE(SUM(amount_usd), 0) as total
      FROM shareholder_stake_history
@@ -3395,6 +3538,7 @@ bot.onText(/\/withdraw/, async (msg) => {
 bot.onText(/\/shareholders/, async (msg) => {
   const chatId = msg.chat.id;
 
+  await ensureShareholderSchemaReady();
   const user = await getLoggedInUser(chatId);
   if (!user) {
     await bot.sendMessage(chatId, '❌ Please login first with /login');
@@ -3502,6 +3646,7 @@ bot.onText(/\/shareholders/, async (msg) => {
 bot.onText(/\/sh_topup/, async (msg) => {
   const chatId = msg.chat.id;
 
+  await ensureShareholderSchemaReady();
   const user = await getLoggedInUser(chatId);
   if (!user) {
     await bot.sendMessage(chatId, '❌ Please login first with /login');
@@ -3541,6 +3686,7 @@ bot.onText(/\/sh_topup/, async (msg) => {
 bot.onText(/\/sh_help/, async (msg) => {
   const chatId = msg.chat.id;
 
+  await ensureShareholderSchemaReady();
   const admin = isAdmin(chatId);
   let message = `🏛️ **Shareholder Commands Guide**
 
@@ -3640,6 +3786,7 @@ bot.onText(/\/sh_help/, async (msg) => {
 bot.onText(/\/sh_withdraw/, async (msg) => {
   const chatId = msg.chat.id;
 
+  await ensureShareholderSchemaReady();
   const user = await getLoggedInUser(chatId);
   if (!user) {
     await bot.sendMessage(chatId, '❌ Please login first with /login');
@@ -8094,6 +8241,9 @@ async function resolveShareholderByQuery(query) {
 
 bot.onText(/\/sh_create (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const memberId = match[1].trim().toUpperCase();
@@ -8117,6 +8267,9 @@ bot.onText(/\/sh_create (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_view (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const query = match[1].trim();
@@ -8160,6 +8313,9 @@ bot.onText(/\/sh_view (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_adjust (\S+) (\S+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const query = match[1];
@@ -8204,6 +8360,9 @@ bot.onText(/\/sh_adjust (\S+) (\S+) (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_setstatus (\S+) (\S+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const query = match[1];
@@ -8233,6 +8392,9 @@ bot.onText(/\/sh_setstatus (\S+) (\S+)/, async (msg, match) => {
 
 bot.onText(/\/sh_suspend (\S+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
   const shareholder = await resolveShareholderByQuery(match[1]);
   if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
@@ -8247,6 +8409,9 @@ bot.onText(/\/sh_suspend (\S+) (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_unsuspend (\S+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
   const shareholder = await resolveShareholderByQuery(match[1]);
   if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
@@ -8261,6 +8426,9 @@ bot.onText(/\/sh_unsuspend (\S+) (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_delete (\S+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const shareholder = await resolveShareholderByQuery(match[1]);
@@ -8279,6 +8447,9 @@ bot.onText(/\/sh_delete (\S+) (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_list(?:\s+(.+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const query = match[1] ? match[1].trim().toUpperCase() : '';
@@ -8320,6 +8491,9 @@ bot.onText(/\/sh_list(?:\s+(.+))?/, async (msg, match) => {
 
 bot.onText(/\/sh_pending/, async (msg) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
   const [topups, withdrawals] = await Promise.all([
@@ -8369,6 +8543,9 @@ bot.onText(/\/sh_pending/, async (msg) => {
 
 bot.onText(/\/sh_approve_topup (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
   const requestId = match[1].trim();
 
@@ -8418,6 +8595,9 @@ bot.onText(/\/sh_approve_topup (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_reject_topup (\S+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
   const requestId = match[1].trim();
   const reason = match[2].trim();
@@ -8444,6 +8624,9 @@ bot.onText(/\/sh_reject_topup (\S+) (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_approve_withdraw (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
   const requestId = match[1].trim();
 
@@ -8486,6 +8669,9 @@ bot.onText(/\/sh_approve_withdraw (.+)/, async (msg, match) => {
 
 bot.onText(/\/sh_reject_withdraw (\S+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  await ensureShareholderSchemaReady();
+
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
   const requestId = match[1].trim();
   const reason = match[2].trim();
