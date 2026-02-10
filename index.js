@@ -1793,6 +1793,10 @@ async function ensureShareholderTablesReady() {
       UNIQUE (run_date)
     )
   `);
+       ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb)
+      `
+    );
+  }
 }
 
 async function getShareholderByMemberId(memberId) {
