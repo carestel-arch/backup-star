@@ -1,20 +1,35 @@
 {
-  "name": "backup-star",
+  "name": "starlife-advert-bot",
   "version": "1.0.0",
-  "private": true,
-  "description": "Telegram earning bot",
+  "description": "Telegram investment bot with PostgreSQL database",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js"
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "setup-db": "node -e \"const { Pool } = require('pg'); const pool = new Pool({ connectionString: process.env.DATABASE_URL }); require('fs').readFile('database.sql', 'utf8', (err, sql) => { if (err) throw err; pool.query(sql, (err) => { if (err) console.error(err); else console.log('Database setup complete'); pool.end(); }); });\""
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "investment",
+    "postgresql",
+    "nodejs"
+  ],
+  "author": "Starlife Advert",
+  "license": "ISC",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.3.1",
+    "nodemailer": "^6.9.14"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "express": "^4.21.2",
-    "node-telegram-bot-api": "^0.66.0",
-    "nodemailer": "^6.10.1",
-    "pg": "^8.13.1"
+    "node": ">=16.0.0"
   }
 }
