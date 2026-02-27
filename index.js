@@ -5802,7 +5802,18 @@ bot.on('message', async (msg) => {
         return;
       }
 
-      let remaining = paymentAmount;
+      const totalOutstanding = roundCurrency(
+        parseFloat(loan.penalties_outstanding_usd || 0) + parseFloat(loan.principal_outstanding_usd || 0)
+      );
+      if (totalOutstanding <= 0) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '⚠️ This loan is already fully paid.');
+        return;
+      }
+
+      const appliedPaymentAmount = roundCurrency(Math.min(paymentAmount, totalOutstanding));
+
+      let remaining = appliedPaymentAmount;
       const penaltyOutstanding = parseFloat(loan.penalties_outstanding_usd || 0);
       const principalOutstanding = parseFloat(loan.principal_outstanding_usd || 0);
       const toPenalty = roundCurrency(Math.min(remaining, penaltyOutstanding));
@@ -5814,7 +5825,7 @@ bot.on('message', async (msg) => {
       const nextStatus = nextPenalty <= 0 && nextPrincipal <= 0 ? LOAN_STATUS.REPAID : loan.status;
 
       await updateUser(session.data.memberId, {
-        balance: roundCurrency(parseFloat(user.balance || 0) - paymentAmount)
+        balance: roundCurrency(parseFloat(user.balance || 0) - appliedPaymentAmount)
       });
 
       await pool.query(
@@ -5829,7 +5840,7 @@ bot.on('message', async (msg) => {
         [
           nextPenalty,
           nextPrincipal,
-          roundCurrency(parseFloat(loan.total_paid_usd || 0) + paymentAmount),
+          roundCurrency(parseFloat(loan.total_paid_usd || 0) + appliedPaymentAmount),
           nextStatus,
           nextStatus === LOAN_STATUS.REPAID ? new Date() : null,
           new Date(),
@@ -5842,14 +5853,14 @@ bot.on('message', async (msg) => {
         `INSERT INTO loan_payments
          (payment_id, loan_id, member_id, amount_usd, allocated_to_penalty_usd, allocated_to_principal_usd, principal_balance_after_usd, penalties_balance_after_usd, source, note)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [paymentId, loan.loan_id, session.data.memberId, paymentAmount, toPenalty, toPrincipal, nextPrincipal, nextPenalty, 'user_payment', 'User repayment']
+        [paymentId, loan.loan_id, session.data.memberId, appliedPaymentAmount, toPenalty, toPrincipal, nextPrincipal, nextPenalty, 'user_payment', 'User repayment']
       );
 
       await createTransaction({
         id: `TRX-LPAY-${Date.now()}`,
         memberId: session.data.memberId,
         type: 'loan_repayment',
-        amount: -paymentAmount,
+        amount: -appliedPaymentAmount,
         description: `Loan repayment ${loan.loan_id}`
       });
 
@@ -5859,7 +5870,7 @@ bot.on('message', async (msg) => {
         action: 'loan_payment_received',
         targetType: 'loan',
         targetId: loan.loan_id,
-        afterState: { paymentId, paymentAmount, toPenalty, toPrincipal, nextPenalty, nextPrincipal, nextStatus }
+        afterState: { paymentId, paymentAmount: appliedPaymentAmount, toPenalty, toPrincipal, nextPenalty, nextPrincipal, nextStatus }
       });
 
       delete userSessions[chatId];
@@ -5870,7 +5881,7 @@ bot.on('message', async (msg) => {
 ` +
         `Payment ID: ${paymentId}
 ` +
-        `Paid: ${formatCurrency(paymentAmount)}
+        `Paid: ${formatCurrency(appliedPaymentAmount)}
 ` +
         `Applied to penalties: ${formatCurrency(toPenalty)}
 ` +
@@ -5882,6 +5893,13 @@ bot.on('message', async (msg) => {
 ` +
         `Loan status: ${nextStatus.toUpperCase()}`
       );
+
+      if (appliedPaymentAmount < paymentAmount) {
+        await bot.sendMessage(
+          chatId,
+          `ℹ️ Overpayment prevented. Only outstanding balance (${formatCurrency(appliedPaymentAmount)}) was charged.`
+        );
+      }
     }
 
     // Handle investment amount
@@ -9541,23 +9559,54 @@ bot.onText(/\/loan_approve (.+)/, async (msg, match) => {
   const borrowedAt = new Date();
   const dueDate = new Date(borrowedAt.getTime() + parseInt(req.term_days, 10) * 24 * 60 * 60 * 1000);
   const disbursementRef = `LDSB-${requestId}`;
-  const newBalance = roundCurrency(parseFloat(user.balance || 0) + parseFloat(req.disbursed_amount_usd || 0));
 
-  await updateUser(req.member_id, { balance: newBalance });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  await pool.query(
-    `INSERT INTO loans
-     (loan_id, request_id, member_id, principal_usd, interest_rate, interest_deducted_usd, disbursed_amount_usd, term_days, borrowed_at, due_date, status, principal_outstanding_usd, penalties_accrued_usd, penalties_outstanding_usd, disbursement_reference, disbursed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-    [loanId, req.request_id, req.member_id, req.amount_usd, req.interest_rate, req.interest_amount_usd, req.disbursed_amount_usd, req.term_days, borrowedAt, dueDate, LOAN_STATUS.ACTIVE, req.amount_usd, 0, 0, disbursementRef, borrowedAt]
-  );
+    const requestInTxn = await client.query(
+      'SELECT * FROM loan_requests WHERE request_id = $1 FOR UPDATE',
+      [requestId]
+    );
+    if (requestInTxn.rows.length === 0) {
+      await client.query('ROLLBACK');
+      await bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+      return;
+    }
 
-  await pool.query(
-    `UPDATE loan_requests
-     SET status = $1, decided_at = $2, decided_by = $3, loan_id = $4
-     WHERE request_id = $5`,
-    [LOAN_REQUEST_STATUS.APPROVED, new Date(), chatId.toString(), loanId, requestId]
-  );
+    const currentRequest = requestInTxn.rows[0];
+    if (currentRequest.status !== LOAN_REQUEST_STATUS.PENDING_ADMIN_APPROVAL) {
+      await client.query('ROLLBACK');
+      await bot.sendMessage(chatId, `⚠️ Request ${requestId} is not pending.`);
+      return;
+    }
+
+    await client.query(
+      'UPDATE users SET balance = ROUND((COALESCE(balance, 0) + $1)::numeric, 2), updated_at = $2 WHERE member_id = $3',
+      [parseFloat(currentRequest.disbursed_amount_usd || 0), new Date(), currentRequest.member_id]
+    );
+
+    await client.query(
+      `INSERT INTO loans
+       (loan_id, request_id, member_id, principal_usd, interest_rate, interest_deducted_usd, disbursed_amount_usd, term_days, borrowed_at, due_date, status, principal_outstanding_usd, penalties_accrued_usd, penalties_outstanding_usd, disbursement_reference, disbursed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [loanId, currentRequest.request_id, currentRequest.member_id, currentRequest.amount_usd, currentRequest.interest_rate, currentRequest.interest_amount_usd, currentRequest.disbursed_amount_usd, currentRequest.term_days, borrowedAt, dueDate, LOAN_STATUS.ACTIVE, currentRequest.amount_usd, 0, 0, disbursementRef, borrowedAt]
+    );
+
+    await client.query(
+      `UPDATE loan_requests
+       SET status = $1, decided_at = $2, decided_by = $3, loan_id = $4
+       WHERE request_id = $5`,
+      [LOAN_REQUEST_STATUS.APPROVED, new Date(), chatId.toString(), loanId, requestId]
+    );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 
   await createTransaction({
     id: `TRX-LDISB-${Date.now()}`,
