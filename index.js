@@ -5005,6 +5005,7 @@ bot.onText(/\/addquestion (.+)/, async (msg, match) => {
   if (!survey.rows.length) return bot.sendMessage(chatId, `❌ Survey ${surveyId} not found or inactive.`);
 
   adminSessions[chatId] = { step: 'survey_add_question_text', data: { surveyId, questionType: survey.rows[0].question_type } };
+  adminSessions[chatId] = { step: 'survey_add_question_text', data: { surveyId } };
   await bot.sendMessage(chatId, `Enter question text for ${surveyId}:`);
 });
 
@@ -5358,6 +5359,7 @@ bot.on('message', async (msg) => {
       const hasOptions = Array.isArray(q.answer_options) && q.answer_options.length > 0;
       const isCorrect = hasOptions && answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
       const resultText = hasOptions ? (isCorrect ? 'Correct' : 'Wrong') : 'Recorded';
+      const isCorrect = answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
       session.data.responses.push({
         question_id: q.question_id,
         question: q.question_text,
@@ -5367,6 +5369,11 @@ bot.on('message', async (msg) => {
       });
 
       await bot.sendMessage(chatId, resultText);
+        correct_answer: q.correct_answer,
+        result: isCorrect ? 'Correct' : 'Wrong'
+      });
+
+      await bot.sendMessage(chatId, isCorrect ? 'Correct' : 'Wrong');
 
       session.data.currentQuestion += 1;
       if (session.data.currentQuestion >= questions.length) {
@@ -8575,6 +8582,7 @@ bot.on('message', async (msg) => {
     } else {
       await bot.sendMessage(chatId, 'Enter answer options separated by | (example: A|B|C|D). Type SKIP to save as text question:');
     }
+    await bot.sendMessage(chatId, 'Enter answer options separated by | (or type SKIP for text question):');
     return;
   }
 
@@ -8611,6 +8619,9 @@ bot.on('message', async (msg) => {
     adminSession.data.answerOptions = options;
     adminSession.step = 'survey_add_question_correct';
     await bot.sendMessage(chatId, 'Enter correct answer (must match one option exactly):');
+    adminSession.data.answerOptions = raw.toUpperCase() === 'SKIP' ? [] : raw.split('|').map(v => v.trim()).filter(Boolean);
+    adminSession.step = 'survey_add_question_correct';
+    await bot.sendMessage(chatId, 'Enter correct answer:');
     return;
   }
 
@@ -8632,11 +8643,13 @@ bot.on('message', async (msg) => {
         adminSession.data.surveyId,
         adminSession.data.questionText,
         JSON.stringify(options),
+        JSON.stringify(adminSession.data.answerOptions || []),
         correctAnswer
       ]
     );
 
     await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId, questionType: 'multiple_choice' });
+    await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId });
 
     delete adminSessions[chatId];
     await bot.sendMessage(chatId, `✅ Question saved with ID ${questionId}.`);
