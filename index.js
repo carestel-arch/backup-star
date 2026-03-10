@@ -8604,7 +8604,7 @@ bot.on('message', async (msg) => {
     }
 
     adminSession.step = 'survey_add_question_correct';
-    await bot.sendMessage(chatId, 'Enter correct answer:');
+    await bot.sendMessage(chatId, 'Enter correct answer (or type SKIP if there is no single correct answer):');
     return;
   }
 
