@@ -8568,20 +8568,34 @@ bot.on('message', async (msg) => {
   if (adminSession.step === 'survey_add_question_text') {
     adminSession.data.questionText = text.trim();
     adminSession.step = 'survey_add_question_options';
-    await bot.sendMessage(chatId, 'Enter answer options separated by | (or type SKIP for text question):');
+    await bot.sendMessage(chatId, 'Enter answer options separated by | (type SKIP for text question).');
     return;
   }
 
   if (adminSession.step === 'survey_add_question_options') {
     const raw = text.trim();
-    adminSession.data.answerOptions = raw.toUpperCase() === 'SKIP' ? [] : raw.split('|').map(v => v.trim()).filter(Boolean);
+    const normalizedRaw = raw.toUpperCase();
+    const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
+    adminSession.data.answerOptions = skipTokens.has(normalizedRaw)
+      ? []
+      : raw.split('|').map(v => v.trim()).filter(Boolean);
     adminSession.step = 'survey_add_question_correct';
-    await bot.sendMessage(chatId, 'Enter correct answer:');
+    await bot.sendMessage(chatId, 'Enter correct answer (or type SKIP if there is no single correct answer):');
     return;
   }
 
   if (adminSession.step === 'survey_add_question_correct') {
-    const correctAnswer = text.trim();
+    const raw = text.trim();
+    const normalizedRaw = raw.toUpperCase();
+    const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
+    const hasOptions = Array.isArray(adminSession.data.answerOptions) && adminSession.data.answerOptions.length > 0;
+    const correctAnswer = !hasOptions && skipTokens.has(normalizedRaw) ? 'N/A' : raw;
+
+    if (!correctAnswer) {
+      await bot.sendMessage(chatId, '❌ Correct answer cannot be empty. Type SKIP only for text questions without a fixed answer.');
+      return;
+    }
+
     const questionId = await generateQuestionId(adminSession.data.surveyId);
 
     await pool.query(
